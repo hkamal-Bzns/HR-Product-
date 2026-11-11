@@ -28,6 +28,8 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash').notNull(),
   role: roleEnum('role').notNull().default('employee'),
   branchId: uuid('branch_id'),
+  // M4: link from a login account to an employee record (employee self-service).
+  employeeId: uuid('employee_id').references(() => employees.id),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
@@ -426,5 +428,76 @@ export const exportLog = pgTable('export_log', {
   kind: text('kind').notNull(), // register | summary | employer_cost | tax_nosi | attendance | labour_cost | bank_file | payslip
   format: text('format').notNull(), // csv | html
   generatedByUserId: uuid('generated_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ============================================================================
+// M4 — AI agents v1 (Brief §8). Agent runs are the audit trail: inputs hash,
+// output, stubbed cost estimate, human decision. Provider is 'stub' — no real
+// LLM key exists in M4. Schedule drafts are DRAFT ONLY until a human reviews
+// and publishes them through the M2 publish flow.
+// ============================================================================
+export const agentRuns = pgTable('agent_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  agentId: text('agent_id').notNull(), // briefing | schedule | anomaly | qa
+  month: text('month').notNull(), // YYYY-MM
+  inputHash: text('input_hash').notNull(),
+  output: jsonb('output').notNull().default({}),
+  costPiasters: integer('cost_piasters').notNull().default(0), // STUBBED estimate in M4
+  provider: text('provider').notNull().default('stub'),
+  status: text('status').notNull().default('completed'), // completed | paused | failed
+  humanDecision: text('human_decision'),
+  decisions: jsonb('decisions').notNull().default([]),
+  decidedByUserId: uuid('decided_by_user_id'),
+  employeeId: uuid('employee_id').references(() => employees.id), // Agent 4: who asked
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const agentCostLedger = pgTable('agent_cost_ledger', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  agentId: text('agent_id').notNull(),
+  month: text('month').notNull(),
+  costPiasters: integer('cost_piasters').notNull().default(0),
+  runId: uuid('run_id').notNull().references(() => agentRuns.id),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const scheduleDrafts = pgTable('schedule_drafts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  branchId: uuid('branch_id').references(() => branches.id),
+  weekStart: text('week_start').notNull(),
+  status: text('status').notNull().default('draft'), // draft | reviewed | published | rejected
+  suggestions: jsonb('suggestions').notNull().default([]),
+  agentRunId: uuid('agent_run_id').references(() => agentRuns.id),
+  createdByUserId: uuid('created_by_user_id'),
+  decidedByUserId: uuid('decided_by_user_id'),
+  publishedRosterId: uuid('published_roster_id').references(() => rosters.id),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const routedQuestions = pgTable('routed_questions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  question: text('question').notNull(),
+  intent: text('intent').notNull(),
+  status: text('status').notNull().default('routed'), // routed | answered
+  answer: text('answer'),
+  answeredByUserId: uuid('answered_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  answeredAt: timestamp('answered_at'),
+});
+
+export const offlineSyncLog = pgTable('offline_sync_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  deviceAt: timestamp('device_at').notNull(),
+  outcome: text('outcome').notNull(), // accepted | duplicate | conflict_overlap | stale | unsigned | invalid_signature
+  reason: text('reason').notNull(),
+  signatureStatus: text('signature_status').notNull().default('legacy'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

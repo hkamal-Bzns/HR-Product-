@@ -302,7 +302,11 @@ test('Payroll tenancy + employee self-service boundary', async () => {
   assert.equal(runs.body.runs.length, 0); // other tenant sees nothing of demo-cafe
   const emp = signSession({ sub: 'user-emp', tenantId: 'tenant-demo-cafe', role: 'employee' }, SECRET);
   const slips = await j('GET', `/api/payroll/runs/${demoRunId}/payslips`, emp);
-  assert.equal(slips.status, 200); // read-only list is allowed; individual payslip needs a linked account (M4/V1)
-  const one = await j('GET', `/api/payroll/payslips/${slips.body.payslips[0].id}`, emp);
+  assert.equal(slips.status, 200);
+  // M4: an unlinked employee-role account sees NO payslips at all (own data
+  // only, and only when linked — see the M4 link test in m4.test.ts).
+  assert.equal(slips.body.payslips.length, 0);
+  const ownerSlips = await j('GET', `/api/payroll/runs/${demoRunId}/payslips`, owner());
+  const one = await j('GET', `/api/payroll/payslips/${ownerSlips.body.payslips[0].id}`, emp);
   assert.equal(one.status, 403);
 });

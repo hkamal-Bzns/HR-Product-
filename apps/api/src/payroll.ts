@@ -10,10 +10,12 @@ import type { FastifyInstance } from 'fastify';
 import { verifySession, type SessionClaims } from './auth.js';
 import { newId, type MemoryStore, type PayrollRunRecord, type PayslipRecord } from '@hr-payroll/db';
 import {
-  calculatePayslip, detectPayrollAnomalies, daysInMonth, workedDaysInPeriod,
+  calculatePayslip, detectPayrollAnomalies, detectAgent3Anomalies, AGENT_COST_PIASTERS_PER_RUN,
+  daysInMonth, workedDaysInPeriod,
   isPublicHoliday, DEFAULT_STATUTORY_SETTINGS, TAX_RULES_2026, OVERTIME_RULES_2026,
-  type PayslipAllowance, type OvertimeMinutes,
+  type PayslipAllowance, type OvertimeMinutes, type Agent3AnomalyInput,
 } from '@hr-payroll/shared';
+import { recordAgentRun, agentStatus } from './agentCore.js';
 import { notifyEmployee } from './notify.js';
 import { daysBetween } from './leave.js';
 
@@ -112,6 +114,58 @@ export function unpaidLeaveDays(store: MemoryStore, tenantId: string, employeeId
     if (e >= s) days += daysBetween(s, e);
   }
   return days;
+}
+
+// --- M4 Agent 3 inputs (Brief §8) -------------------------------------------
+// Built from the run's payslips (when calculated) or from attendance alone
+// (preview on a prepared run). Previous-overtime average comes from the
+// employee's own prior runs; duplicate detection counts payslips per employee.
+export function buildAgent3Inputs(store: MemoryStore, tenantId: string, run: PayrollRunRecord): { inputs: Agent3AnomalyInput[]; preview: boolean } {
+  const { start, end, days } = periodBounds(run.period);
+  const payslips = store.listPayslips(tenantId, run.id);
+  const preview = payslips.length === 0;
+  const priorRuns = store.listPayrollRuns(tenantId)
+    .filter((r) => r.period < run.period && r.status !== 'draft')
+    .sort((a, b) => (a.period < b.period ? 1 : -1));
+  const prevRun = priorRuns[0];
+  const prevNet = new Map<string, number>();
+  const prevOtAvg = new Map<string, number>();
+  if (prevRun) for (const p of store.listPayslips(tenantId, prevRun.id)) prevNet.set(p.employeeId, p.netPiasters);
+  for (const emp of store.listEmployees(tenantId)) {
+    const ots: number[] = [];
+    for (const pr of priorRuns) {
+      const p = store.listPayslips(tenantId, pr.id).find((x) => x.employeeId === emp.id);
+      if (p) ots.push(p.lines.filter((l) => l.label.startsWith('Overtime')).reduce((s, l) => s + l.amountPiasters, 0));
+    }
+    if (ots.length > 0) prevOtAvg.set(emp.id, Math.round(ots.reduce((s, v) => s + v, 0) / ots.length));
+  }
+  const employees = store.listEmployees(tenantId).filter((e) => e.active !== false && (run.branchIds.length === 0 || (e.branchId && run.branchIds.includes(e.branchId))));
+  const payslipCounts = new Map<string, number>();
+  for (const p of payslips) payslipCounts.set(p.employeeId, (payslipCounts.get(p.employeeId) ?? 0) + 1);
+  const inputs: Agent3AnomalyInput[] = employees.map((emp) => {
+    const slip = payslips.find((p) => p.employeeId === emp.id);
+    const att = summariseAttendance(store, tenantId, emp.id, start, end);
+    const struct = store.structureFor(tenantId, emp.id);
+    const otPay = slip
+      ? slip.lines.filter((l) => l.label.startsWith('Overtime')).reduce((s, l) => s + l.amountPiasters, 0)
+      : 0;
+    return {
+      employeeId: emp.id,
+      netPiasters: slip?.netPiasters ?? 0,
+      grossPiasters: slip?.grossPiasters ?? 0,
+      overtimePayPiasters: otPay,
+      basicPiasters: struct?.basicPiasters ?? emp.basicSalaryPiasters,
+      workedDays: att.workedDays,
+      missingClockOuts: att.missingClockOuts,
+      previousNetPiasters: prevNet.get(emp.id) ?? null,
+      hasApprovedLeave: store.listLeaveRequests(tenantId).some(
+        (l) => l.employeeId === emp.id && l.status === 'approved' && l.startDate <= end && l.endDate >= start),
+      previousOvertimePayAvgPiasters: prevOtAvg.get(emp.id) ?? null,
+      duplicateInRun: (payslipCounts.get(emp.id) ?? 0) > 1,
+      daysInMonthCount: days,
+    };
+  });
+  return { inputs, preview };
 }
 
 /** Calculate (or re-calculate) every payslip for a run. Only allowed while
@@ -354,22 +408,42 @@ export function registerM3(app: FastifyInstance, store: MemoryStore, jwtSecret: 
     catch (e) { return reply.code(404).send({ error: (e as Error).message }); }
   });
 
-  // --- Step 2: Review anomalies ----------------------------------------------
+  // --- Step 2: Review anomalies (M4: wired to AI Agent 3) ----------------------
+  // Agent 3 runs the extended check (duplicate payment, OT spike vs the
+  // employee's own history, missing clock-outs priced as full days) and the
+  // run is recorded in the agent-run ledger. The agent NEVER blocks payroll:
+  // if it is paused (kill switch / cost cap) the step still returns the M3
+  // base check and says so.
   app.post('/api/payroll/runs/:id/review', async (req, reply) => {
     const c = claims(req as never, reply); if (!c) return;
     const t = tenant(c, reply); if (!t) return;
     let run: PayrollRunRecord;
     try { run = store.getPayrollRun(t, (req.params as { id: string }).id); } catch (e) { return reply.code(404).send({ error: (e as Error).message }); }
-    if (run.status === 'calculated' || run.status === 'locked' || run.status === 'paid' || run.status === 'approved') {
-      return { runId: run.id, period: run.period, anomalies: run.anomalies, note: 'anomalies from the calculated run' };
-    }
-    // Not yet calculated: run the anomaly check on attendance alone.
     const { start, end } = periodBounds(run.period);
-    const inputs = store.listEmployees(t).filter((e) => run.branchIds.includes(e.branchId ?? '')).map((e) => {
+    const baseInputs = store.listEmployees(t).filter((e) => run.branchIds.includes(e.branchId ?? '')).map((e) => {
       const att = summariseAttendance(store, t, e.id, start, end);
       return { employeeId: e.id, netPiasters: 0, grossPiasters: 0, overtimePayPiasters: 0, basicPiasters: e.basicSalaryPiasters, workedDays: att.workedDays, missingClockOuts: att.missingClockOuts, previousNetPiasters: null, hasApprovedLeave: false };
     });
-    return { runId: run.id, period: run.period, anomalies: detectPayrollAnomalies(inputs), note: 'pre-calculation anomaly preview (no pay figures yet)' };
+    const baseAnomalies = detectPayrollAnomalies(baseInputs);
+    const status = agentStatus(store, t, 'anomaly');
+    if (status.paused) {
+      return {
+        runId: run.id, period: run.period,
+        anomalies: run.status === 'calculated' || run.status === 'locked' || run.status === 'paid' || run.status === 'approved' ? run.anomalies : baseAnomalies,
+        agent3: { paused: true, globalKilled: status.globalKilled, tenantKilled: status.tenantKilled, capExceeded: status.capExceeded },
+        note: 'Agent 3 is paused (kill switch or cost cap) — showing the M3 base anomaly check only. Payroll is never blocked by an agent pause.',
+      };
+    }
+    const { inputs, preview } = buildAgent3Inputs(store, t, run);
+    let anomalies = detectAgent3Anomalies(inputs);
+    if (preview) anomalies = anomalies.filter((a) => a.kind === 'missing_clock_out');
+    const agentRun = recordAgentRun(store, t, 'anomaly', { runId: run.id, period: run.period, via: 'payroll_review' }, { runId: run.id, period: run.period, preview, anomalies }, { costPiasters: AGENT_COST_PIASTERS_PER_RUN.anomaly, provider: 'stub' });
+    audit(t, c.sub, 'agent.anomaly.run', 'payroll_run', { runId: run.id, period: run.period, preview, via: 'payroll_review', anomalies: anomalies.length });
+    return {
+      runId: run.id, period: run.period, anomalies,
+      agent3: { agentRunId: agentRun.id, preview, provider: 'stub' },
+      note: preview ? 'Agent 3 pre-calculation preview (missing clock-outs priced as full days; no pay figures yet)' : 'Agent 3 ranked anomalies with amounts in EGP — the owner decides; all flags and decisions are audit-logged',
+    };
   });
 
   // --- Step 3: Calculate -------------------------------------------------------
@@ -511,17 +585,34 @@ export function registerM3(app: FastifyInstance, store: MemoryStore, jwtSecret: 
   });
 
   // --- Payslips ----------------------------------------------------------------
+  // M4: an employee-role user sees ONLY their own payslips, and only when
+  // their login account is linked to an employee record (POST
+  // /api/employees/link). Unlinked employees see an empty list, never
+  // anyone else's payslip.
   app.get('/api/payroll/runs/:id/payslips', async (req, reply) => {
     const c = claims(req as never, reply); if (!c) return;
     const t = tenant(c, reply); if (!t) return;
     try { store.getPayrollRun(t, (req.params as { id: string }).id); } catch (e) { return reply.code(404).send({ error: (e as Error).message }); }
-    return { payslips: store.listPayslips(t, (req.params as { id: string }).id) };
+    const all = store.listPayslips(t, (req.params as { id: string }).id);
+    if (c.role === 'employee') {
+      const linked = store.linkedEmployeeForUser(t, c.sub);
+      return { payslips: linked ? all.filter((p) => p.employeeId === linked.id) : [], linked: !!linked };
+    }
+    return { payslips: all };
   });
   app.get('/api/payroll/payslips/:id', async (req, reply) => {
     const c = claims(req as never, reply); if (!c) return;
     const t = tenant(c, reply); if (!t) return;
-    if (c.role === 'employee') return reply.code(403).send({ error: 'employee self-service payslip view needs a linked employee account (M4/V1) — managers and accountants only in M3' });
-    try { return { payslip: store.getPayslip(t, (req.params as { id: string }).id) }; }
+    try {
+      const payslip = store.getPayslip(t, (req.params as { id: string }).id);
+      if (c.role === 'employee') {
+        const linked = store.linkedEmployeeForUser(t, c.sub);
+        if (!linked || linked.id !== payslip.employeeId) {
+          return reply.code(403).send({ error: 'employees see only their own payslip, and only when their login account is linked to their employee record (ask the owner to link it via POST /api/employees/link)' });
+        }
+      }
+      return { payslip };
+    }
     catch (e) { return reply.code(404).send({ error: (e as Error).message }); }
   });
   app.get('/api/payroll/payslips/:id/html', async (req, reply) => {
@@ -529,6 +620,12 @@ export function registerM3(app: FastifyInstance, store: MemoryStore, jwtSecret: 
     const t = tenant(c, reply); if (!t) return;
     try {
       const p = store.getPayslip(t, (req.params as { id: string }).id);
+      if (c.role === 'employee') {
+        const linked = store.linkedEmployeeForUser(t, c.sub);
+        if (!linked || linked.id !== p.employeeId) {
+          return reply.code(403).send({ error: 'employees see only their own payslip, and only when their login account is linked to their employee record' });
+        }
+      }
       const emp = store.employees.find((e) => e.id === p.employeeId);
       const tenantRec = store.getTenant(t);
       logExport(t, p.runId, 'payslip', 'html', c.sub);

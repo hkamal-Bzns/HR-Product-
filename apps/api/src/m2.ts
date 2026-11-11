@@ -13,6 +13,8 @@ import {
 import { coverageWarnings, validateAssignment, validateSwapCover, publishRoster } from './roster.js';
 import { validateLeaveRequest, approveLeave, leaveSettings } from './leave.js';
 import { notifyEmployee } from './notify.js';
+import { verifyOfflineSignature } from './agentCore.js';
+import { classifyOfflineSync } from '@hr-payroll/shared';
 
 export function registerM2(app: FastifyInstance, store: MemoryStore, jwtSecret: string): void {
   const auth = (req: { headers: Record<string, string | string[] | undefined> }): SessionClaims => {
@@ -90,6 +92,12 @@ export function registerM2(app: FastifyInstance, store: MemoryStore, jwtSecret: 
 
   // Offline queue: signed, timestamped records. Conflicts/duplicates go to the
   // review queue — never silently overwritten.
+  // M4 conflict-resolution rules (Brief §9): duplicate device time, unsigned
+  // record, failed signature verification (strict mode only — see agentCore),
+  // or an overlapping active session are HELD for review with no record
+  // created. A stale record (synced after the tolerance window) IS created
+  // but flagged pending_review with an exception. Every record is written to
+  // the offline sync log (see GET /api/attendance/offline-sync/status).
   app.post('/api/attendance/offline-queue', async (req, reply) => {
     const c = claims(req as never, reply); if (!c) return;
     const t = tenant(c, reply); if (!t) return;
@@ -97,23 +105,41 @@ export function registerM2(app: FastifyInstance, store: MemoryStore, jwtSecret: 
     if (!Array.isArray(b?.records) || b.records.length === 0) return reply.code(400).send({ error: 'records[] required' });
     const settings = attendanceSettings(store, t);
     const accepted: unknown[] = []; const review: unknown[] = [];
+    const logSync = (r: { employeeId: string; deviceAt: string }, outcome: 'accepted' | 'duplicate' | 'conflict_overlap' | 'stale' | 'unsigned' | 'invalid_signature', reason: string, signatureStatus: string) => {
+      store.offlineSyncLog.push({ id: newId('sync'), tenantId: t, employeeId: r.employeeId, deviceAt: r.deviceAt, outcome, reason, signatureStatus, createdAt: new Date().toISOString() });
+    };
     for (const r of b.records) {
-      if (!r.signature) { review.push({ employeeId: r.employeeId, reason: 'unsigned offline record — held for review' }); continue; }
+      const sig = verifyOfflineSignature(t, r.employeeId, r.deviceAt, r.branchId, r.signature);
       const duplicate = store.attendance.some((a) => a.tenantId === t && a.employeeId === r.employeeId && a.deviceAt === r.deviceAt);
-      if (duplicate) {
-        const ex = { id: newId('exc'), tenantId: t, attendanceRecordId: null, employeeId: r.employeeId, branchId: r.branchId, kind: 'low_confidence', status: 'open' as const, reason: `duplicate offline record for device time ${r.deviceAt} — kept for review, never silently overwritten`, resolvedByUserId: null, resolutionNote: null, resolvedAt: null, createdAt: new Date().toISOString() };
-        store.addException(ex); review.push({ employeeId: r.employeeId, reason: ex.reason }); continue;
-      }
+      const overlapsActive = !!store.activeSession(t, r.employeeId);
       const ageHours = (Date.now() - new Date(r.deviceAt).getTime()) / 3600000;
-      const withinTolerance = ageHours <= settings.offlineToleranceHours;
+      const decision = classifyOfflineSync({
+        alreadyExists: duplicate, overlapsActiveSession: overlapsActive, ageHours,
+        toleranceHours: settings.offlineToleranceHours,
+        signaturePresent: !!r.signature, signatureValid: sig.valid,
+      });
+      if (decision.outcome === 'duplicate' || decision.outcome === 'unsigned' || decision.outcome === 'invalid_signature' || decision.outcome === 'conflict_overlap') {
+        const ex = { id: newId('exc'), tenantId: t, attendanceRecordId: null, employeeId: r.employeeId, branchId: r.branchId, kind: 'low_confidence', status: 'open' as const, reason: `${decision.reason} — kept for review, never silently overwritten`, resolvedByUserId: null, resolutionNote: null, resolvedAt: null, createdAt: new Date().toISOString() };
+        store.addException(ex);
+        logSync(r, decision.outcome, decision.reason, sig.status);
+        review.push({ employeeId: r.employeeId, reason: ex.reason });
+        continue;
+      }
       try {
         const result = clockIn(store, t, { employeeId: r.employeeId, branchId: r.branchId, token: r.token, lat: r.lat, lng: r.lng, mockLocation: r.mockLocation, deviceAt: r.deviceAt, method: 'offline_queue', source: 'offline_queue' }, new Date(r.deviceAt));
-        if (!withinTolerance) {
+        if (decision.outcome === 'stale') {
           result.record.verificationStatus = 'pending_review';
-          store.addException({ id: newId('exc'), tenantId: t, attendanceRecordId: result.record.id, employeeId: r.employeeId, branchId: r.branchId, kind: 'low_confidence', status: 'open', reason: `offline record synced ${ageHours.toFixed(1)}h after device time (tolerance ${settings.offlineToleranceHours}h)`, resolvedByUserId: null, resolutionNote: null, resolvedAt: null, createdAt: new Date().toISOString() });
-          review.push({ recordId: result.record.id, reason: 'outside offline tolerance window' });
-        } else accepted.push(result.record);
-      } catch (e) { review.push({ employeeId: r.employeeId, reason: (e as Error).message }); }
+          store.addException({ id: newId('exc'), tenantId: t, attendanceRecordId: result.record.id, employeeId: r.employeeId, branchId: r.branchId, kind: 'low_confidence', status: 'open', reason: decision.reason, resolvedByUserId: null, resolutionNote: null, resolvedAt: null, createdAt: new Date().toISOString() });
+          logSync(r, 'stale', decision.reason, sig.status);
+          review.push({ recordId: result.record.id, reason: decision.reason });
+        } else {
+          logSync(r, 'accepted', 'accepted', sig.status);
+          accepted.push(result.record);
+        }
+      } catch (e) {
+        logSync(r, 'conflict_overlap', (e as Error).message, sig.status);
+        review.push({ employeeId: r.employeeId, reason: (e as Error).message });
+      }
     }
     audit(t, c.sub, 'attendance.offline_queue_sync', 'attendance_record', { accepted: accepted.length, review: review.length });
     return { accepted, review, note: 'Offline records are never silently overwritten; conflicts are in the review queue.' };

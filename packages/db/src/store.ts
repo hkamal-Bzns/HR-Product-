@@ -15,6 +15,10 @@ export interface TenantRecord {
 export interface UserRecord {
   id: string; tenantId: string; email: string; phone: string | null;
   passwordHash: string; role: Role; branchId: string | null;
+  /** M4: link from a login account to an employee record (employee
+   *  self-service). Null = not linked; an unlinked employee-role user sees
+   *  no employee data at all. */
+  employeeId?: string | null;
 }
 export interface SettingsRecord {
   id: string; tenantId: string; area: SettingsArea; version: number;
@@ -54,6 +58,16 @@ export class MemoryStore {
   payrollAdjustments: PayrollAdjustmentRecord[] = [];
   bankFiles: BankFileRecord[] = [];
   exportLog: ExportLogRecord[] = [];
+  // --- M4 agents ---------------------------------------------------------------
+  agentRuns: AgentRunRecord[] = [];
+  agentCosts: AgentCostRecord[] = [];
+  /** Monthly cost cap overrides, piasters. Key: `${tenantId}:${agentId}` or `${tenantId}:all`. */
+  agentCostCaps = new Map<string, number>();
+  /** Kill switches: true = agent paused. Key: `global:${agentId}` or `${tenantId}:${agentId}`. */
+  agentKillSwitches = new Map<string, boolean>();
+  scheduleDrafts: ScheduleDraftRecord[] = [];
+  routedQuestions: RoutedQuestionRecord[] = [];
+  offlineSyncLog: OfflineSyncRecord[] = [];
   usedQrNonces = new Set<string>();
   lastPunchByEmployee = new Map<string, { lat: number; lng: number; atMs: number }>();
   settings = new Map<string, SettingsRecord[]>(); // key: tenantId:area
@@ -166,6 +180,32 @@ export class MemoryStore {
   }
   pendingAdjustments(tenantId: string, employeeId: string, targetPeriod: string): PayrollAdjustmentRecord[] {
     return this.payrollAdjustments.filter((a) => a.tenantId === tenantId && a.employeeId === employeeId && a.targetPeriod === targetPeriod && a.status === 'pending');
+  }
+  // --- M4 tenant-scoped helpers -------------------------------------------
+  /** The employee record linked to a login account, or null when unlinked.
+   *  An employee-role user with no link sees no employee data (M4 gap fix). */
+  linkedEmployeeForUser(tenantId: string, userId: string): EmployeeRecord | null {
+    const u = this.users.get(userId);
+    if (!u || u.tenantId !== tenantId || !u.employeeId) return null;
+    return this.employees.find((e) => e.id === u.employeeId && e.tenantId === tenantId) ?? null;
+  }
+  listAgentRuns(tenantId: string, agentId?: string, month?: string): AgentRunRecord[] {
+    return this.agentRuns.filter((r) => r.tenantId === tenantId && (!agentId || r.agentId === agentId) && (!month || r.month === month));
+  }
+  agentMonthCost(tenantId: string, agentId: string, month: string): number {
+    return this.agentCosts
+      .filter((c) => c.tenantId === tenantId && c.agentId === agentId && c.month === month)
+      .reduce((s, c) => s + c.costPiasters, 0);
+  }
+  listScheduleDrafts(tenantId: string): ScheduleDraftRecord[] { return this.scheduleDrafts.filter((d) => d.tenantId === tenantId); }
+  getScheduleDraft(tenantId: string, id: string): ScheduleDraftRecord {
+    const d = this.scheduleDrafts.find((x) => x.id === id);
+    if (!d) throw new Error('schedule draft not found');
+    assertSameTenant(tenantId, d.tenantId);
+    return d;
+  }
+  listRoutedQuestions(tenantId: string, employeeId?: string): RoutedQuestionRecord[] {
+    return this.routedQuestions.filter((q) => q.tenantId === tenantId && (!employeeId || q.employeeId === employeeId));
   }
 }
 // ============================================================================
@@ -300,6 +340,60 @@ export interface BankFileRecord {
 export interface ExportLogRecord {
   id: string; tenantId: string; runId: string | null; kind: string; format: string;
   generatedByUserId: string | null; createdAt: string;
+}
+
+// ============================================================================
+// M4 — AI agents v1 (Brief §8). Agent runs are the audit trail: every run
+// records its inputs hash, output, stubbed cost estimate and the human
+// decision. Agents never mutate pay, leave, rosters or discipline directly.
+// ============================================================================
+export type AgentRunStatus = 'completed' | 'paused' | 'failed';
+export interface AgentRunRecord {
+  id: string; tenantId: string; agentId: string; month: string;
+  inputHash: string; output: unknown; costPiasters: number; provider: 'stub' | 'http';
+  status: AgentRunStatus;
+  /** Human decision recorded after the run (e.g. briefing action taken,
+   *  anomaly accept/dismiss, draft review). Null = undecided. */
+  humanDecision: string | null;
+  decisions: unknown[];
+  decidedByUserId: string | null;
+  employeeId: string | null; // Agent 4: which employee asked
+  createdAt: string;
+}
+export interface AgentCostRecord {
+  id: string; tenantId: string; agentId: string; month: string;
+  costPiasters: number; runId: string; createdAt: string;
+}
+export type ScheduleDraftStatus = 'draft' | 'reviewed' | 'published' | 'rejected';
+export interface ScheduleSuggestion {
+  id: string; employeeId: string; date: string; shiftTemplateId: string;
+  reasonAr: string; reasonEn: string;
+  violations: { code: string; reasonAr: string; reasonEn: string }[];
+  warnings: { code: string; reasonAr: string; reasonEn: string }[];
+  score: number;
+  decision: 'pending' | 'accepted' | 'edited' | 'rejected';
+  editedShiftTemplateId: string | null;
+  decidedByUserId: string | null;
+}
+export interface ScheduleDraftRecord {
+  id: string; tenantId: string; branchId: string; weekStart: string;
+  status: ScheduleDraftStatus;
+  suggestions: ScheduleSuggestion[];
+  agentRunId: string | null;
+  createdByUserId: string | null; decidedByUserId: string | null;
+  publishedRosterId: string | null;
+  createdAt: string;
+}
+export interface RoutedQuestionRecord {
+  id: string; tenantId: string; employeeId: string; question: string; intent: string;
+  status: 'routed' | 'answered';
+  answer: string | null; answeredByUserId: string | null;
+  createdAt: string; answeredAt: string | null;
+}
+export interface OfflineSyncRecord {
+  id: string; tenantId: string; employeeId: string; deviceAt: string;
+  outcome: 'accepted' | 'duplicate' | 'conflict_overlap' | 'stale' | 'unsigned' | 'invalid_signature';
+  reason: string; signatureStatus: string; createdAt: string;
 }
 
 export function newId(prefix: string): string {

@@ -1,5 +1,6 @@
 // @hr-payroll/shared — pure, dependency-free helpers.
 export * from './payroll.js';
+export * from './agents.js';
 // Money is integer piasters everywhere. Phones normalise to +20….
 // No payroll rates are asserted here: the NOSI employer rate is UNRESOLVED
 // (Brief v2 §7/§10) and must stay null until a payroll reviewer confirms it at M0.
@@ -51,11 +52,12 @@ export function formatEgp(piasters: number, locale = 'ar-EG'): string {
 export type SettingsArea =
   | 'company_branches' | 'attendance' | 'shifts' | 'leave'
   | 'people_roles' | 'payroll_structure' | 'statutory_rates'
-  | 'notifications' | 'integrations_billing_data';
+  | 'notifications' | 'integrations_billing_data' | 'ai_agents';
 
 export const SETTINGS_AREAS: SettingsArea[] = [
   'company_branches', 'attendance', 'shifts', 'leave', 'people_roles',
   'payroll_structure', 'statutory_rates', 'notifications', 'integrations_billing_data',
+  'ai_agents',
 ];
 
 export type Permission = 'change' | 'view' | 'none';
@@ -64,22 +66,22 @@ export const PERMISSION_MATRIX: Record<Role, Record<SettingsArea, Permission>> =
   owner: {
     company_branches: 'change', attendance: 'change', shifts: 'change', leave: 'change',
     people_roles: 'change', payroll_structure: 'change', statutory_rates: 'change',
-    notifications: 'change', integrations_billing_data: 'change',
+    notifications: 'change', integrations_billing_data: 'change', ai_agents: 'change',
   },
   accountant: {
     company_branches: 'view', attendance: 'view', shifts: 'view', leave: 'view',
     people_roles: 'view', payroll_structure: 'change', statutory_rates: 'change',
-    notifications: 'view', integrations_billing_data: 'view',
+    notifications: 'view', integrations_billing_data: 'view', ai_agents: 'view',
   },
   branch_manager: {
     company_branches: 'view', attendance: 'change', shifts: 'change', leave: 'change',
     people_roles: 'view', payroll_structure: 'view', statutory_rates: 'none',
-    notifications: 'view', integrations_billing_data: 'none',
+    notifications: 'view', integrations_billing_data: 'none', ai_agents: 'view',
   },
   employee: {
     company_branches: 'none', attendance: 'view', shifts: 'view', leave: 'change',
     people_roles: 'none', payroll_structure: 'view', statutory_rates: 'none',
-    notifications: 'view', integrations_billing_data: 'none',
+    notifications: 'view', integrations_billing_data: 'none', ai_agents: 'none',
   },
 };
 
@@ -445,4 +447,15 @@ export const DEFAULT_INTEGRATIONS_SETTINGS = {
   staffCap: 20,
   billing: { paymentMethod: null as string | null, invoices: [] as unknown[] },
   dataExport: { photoRetentionDays: 90 },
+};
+
+// --- M4 defaults: Settings Area 10 — AI agents (Brief §8, §10 Area 8) --------
+// Cost cap is per agent per tenant per month. Kill switches default OFF
+// (agents enabled); a kill switch pauses that agent only — never attendance
+// or payroll. Provider is 'stub' until a real LLM key is configured (V1).
+export const DEFAULT_AI_AGENTS_SETTINGS = {
+  provider: 'stub' as const, // STUBBED — no real LLM key exists in M4
+  monthlyCapPiastersPerAgent: 50000, // EGP 500 per agent per month
+  killSwitches: { briefing: false, schedule: false, anomaly: false, qa: false },
+  briefing: { enabled: true, sendTime: '08:00', language: 'ar' as const },
 };

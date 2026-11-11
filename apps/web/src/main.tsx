@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
-type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin';
+type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin' | 'agents';
 
 function App() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
@@ -32,7 +32,7 @@ function App() {
   const [leaveType, setLeaveType] = useState('annual');
   const [leaveStart, setLeaveStart] = useState('2026-12-01');
   const [leaveEnd, setLeaveEnd] = useState('2026-12-02');
-  const [settingsArea, setSettingsArea] = useState<'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data'>('attendance');
+  const [settingsArea, setSettingsArea] = useState<'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data' | 'ai_agents'>('attendance');
   const [settingsJson, setSettingsJson] = useState('');
   const [settingsReason, setSettingsReason] = useState('');
   const [confirmDangerous, setConfirmDangerous] = useState(false);
@@ -47,6 +47,18 @@ function App() {
   const [weekStart, setWeekStart] = useState('2026-11-16');
   const [rosterDate, setRosterDate] = useState('2026-11-16');
   const [templateId, setTemplateId] = useState('tpl-morning');
+  // --- M4 agents ---------------------------------------------------------------
+  const [briefing, setBriefing] = useState<{ textAr: string; textEn: string; topActionAr: string; topActionEn: string } | null>(null);
+  const [drafts, setDrafts] = useState<{ id: string; branchId: string; weekStart: string; status: string; suggestions: { id: string; employeeId: string; date: string; shiftTemplateId: string; reasonAr: string; reasonEn: string; violations: { code: string; reasonAr: string }[]; score: number; decision: string }[] }[]>([]);
+  const [selectedDraftId, setSelectedDraftId] = useState('');
+  const [draftDecisions, setDraftDecisions] = useState<Record<string, 'accepted' | 'edited' | 'rejected'>>({});
+  const [draftEdits, setDraftEdits] = useState<Record<string, string>>({});
+  const [agentAnomalies, setAgentAnomalies] = useState<{ kind: string; employeeId: string; severity: string; message: string; amountPiasters?: number }[]>([]);
+  const [qaMessages, setQaMessages] = useState<{ q: string; a: string; routed: boolean }[]>([]);
+  const [qaQuestion, setQaQuestion] = useState('ما هي ورديتي القادمة؟');
+  const [agentCost, setAgentCost] = useState<{ month: string; perAgent: { agentId: string; monthCostPiasters: number; capPiasters: number; paused: boolean }[]; totalPiasters: number } | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{ accepted: number; conflicted: number; pending: number; total: number } | null>(null);
+  const [offlineRosterNote, setOfflineRosterNote] = useState('');
 
   useEffect(() => { document.documentElement.lang = lang; document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr'; }, [lang]);
   useEffect(() => {
@@ -54,8 +66,8 @@ function App() {
   }, []);
 
   const t = lang === 'ar'
-    ? { title: 'الموارد البشرية والرواتب', sub: 'M3 — الرواتب: هيكل الرواتب، دورة التشغيل (تجهيز ← مراجعة ← حساب ← اعتماد ← صرف)، كشوف الرواتب، ملفات البنوك، التقارير. واتساب تجريبي (STUBBED).', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', payroll: 'الرواتب', settings: 'الإعدادات', super: 'المشرف العام', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً. ملفات البنوك مولَّدة فقط وليست صرفاً فعلياً.' }
-    : { title: 'HR & Payroll', sub: 'M3 — Payroll: salary structures, run workflow (prepare → review → calculate → approve → pay), payslips, bank files, reports. WhatsApp stubbed.', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', payroll: 'Payroll', settings: 'Settings', super: 'Superadmin', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent. Bank files are generated files, not disbursements.' };
+    ? { title: 'الموارد البشرية والرواتب', sub: 'M4 — وكلاء الذكاء الاصطناعي v1: الإحاطة اليومية، منشئ الجداول (مسودة فقط)، فاحص شذوذ الرواتب، وأسئلة الموظفين. النموذج تجريبي (STUBBED) — المخرجات تُركَّب من بيانات المنتج فقط. واتساب تجريبي.', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', payroll: 'الرواتب', settings: 'الإعدادات', super: 'المشرف العام', agents: 'وكلاء الذكاء الاصطناعي', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً. ملفات البنوك مولَّدة فقط وليست صرفاً فعلياً. وكيل الذكاء الاصطناعي تجريبي: لا مفتاح نموذج حقيقي ولا مكالمات خارجية.' }
+    : { title: 'HR & Payroll', sub: 'M4 — AI agents v1: daily briefing, schedule builder (draft only), payroll anomaly checker, employee Q&A. LLM is STUBBED — outputs are composed from product data only. WhatsApp stubbed.', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', payroll: 'Payroll', settings: 'Settings', super: 'Superadmin', agents: 'AI Agents', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent. Bank files are generated files, not disbursements. AI agents are STUBBED: no real model key, no external calls.' };
 
   const authHeaders: Record<string, string> = token ? { authorization: `Bearer ${token}`, 'content-type': 'application/json' } : { 'content-type': 'application/json' };
   const api = async (path: string, method = 'GET', body?: unknown) => {
@@ -80,8 +92,24 @@ function App() {
     await loadRosters(tok); await loadExceptions(tok); await loadLeave(tok);
   };
   const loadRosters = async (tok = token) => {
-    const r = await fetch(`${API}/api/rosters`, { headers: { authorization: `Bearer ${tok}` } }).then((x) => x.json()).catch(() => ({}));
-    setRosters(r.rosters ?? []);
+    try {
+      const r = await fetch(`${API}/api/rosters`, { headers: { authorization: `Bearer ${tok}` } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setRosters(data.rosters ?? []);
+      // M4 offline roster viewing: cache the last published roster locally.
+      try { localStorage.setItem('hrp:lastRosters', JSON.stringify({ fetchedAt: new Date().toISOString(), rosters: data.rosters ?? [] })); } catch { /* storage unavailable */ }
+      setOfflineRosterNote('');
+    } catch {
+      // Offline: show the cached copy with a staleness banner (payroll stays server-side only).
+      try {
+        const cached = JSON.parse(localStorage.getItem('hrp:lastRosters') ?? 'null') as { fetchedAt: string; rosters: typeof rosters } | null;
+        if (cached) {
+          setRosters(cached.rosters);
+          setOfflineRosterNote(lang === 'ar' ? `أنت دون اتصال — عرض نسخة محفوظة من ${new Date(cached.fetchedAt).toLocaleString()} (قد تكون قديمة). تسجيل الحضور دون اتصال يعمل من قائمة الانتظار؛ حساب الرواتب يعمل على الخادم فقط.` : `Offline — showing a cached copy from ${new Date(cached.fetchedAt).toLocaleString()} (may be stale). Offline clock-in uses the queue; payroll is server-side only.`);
+        } else setOfflineRosterNote(lang === 'ar' ? 'أنت دون اتصال ولا توجد نسخة محفوظة من الجدول.' : 'Offline and no cached roster is available.');
+      } catch { setOfflineRosterNote(''); }
+    }
   };
   const loadExceptions = async (tok = token) => {
     const r = await fetch(`${API}/api/exceptions?status=open`, { headers: { authorization: `Bearer ${tok}` } }).then((x) => x.json()).catch(() => ({}));
@@ -117,6 +145,42 @@ function App() {
     const r = await fetch(`${API}/api/payroll/payslips/${payslipId}/html`, { headers: { authorization: `Bearer ${token}` } });
     setPayslipHtml(await r.text());
   };
+  // --- M4 agents helpers -------------------------------------------------------
+  const loadBriefing = async () => {
+    const r = await fetch(`${API}/api/agents/briefing/latest`, { headers: { authorization: `Bearer ${token}` } }).then((x) => x.json()).catch(() => ({}));
+    if (r.briefing) setBriefing(r.briefing);
+  };
+  const runBriefingNow = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const { json } = await api('/api/agents/briefing/run', 'POST', { date: today });
+    if (json.briefing) setBriefing(json.briefing);
+  };
+  const loadDrafts = async (tok = token) => {
+    const r = await fetch(`${API}/api/agents/schedule/drafts`, { headers: { authorization: `Bearer ${tok}` } }).then((x) => x.json()).catch(() => ({}));
+    setDrafts(r.drafts ?? []);
+  };
+  const runAgent3 = async (runId: string) => {
+    const { json } = await api('/api/agents/anomaly/run', 'POST', { runId });
+    if (json.anomalies) setAgentAnomalies(json.anomalies);
+  };
+  const decideAnomaly = async (runId: string, key: string, decision: 'accepted' | 'dismissed') => {
+    await api('/api/agents/anomaly/decisions', 'POST', { runId, decisions: [{ key, decision, note: 'decided from web demo' }] });
+    await runAgent3(runId);
+  };
+  const askQa = async () => {
+    const { res, json } = await api('/api/agents/qa/ask', 'POST', { question: qaQuestion });
+    if (res.status === 200) setQaMessages((m) => [...m, { q: qaQuestion, a: lang === 'ar' ? json.answerAr : json.answerEn, routed: json.routed }]);
+    else setQaMessages((m) => [...m, { q: qaQuestion, a: json.error ?? 'failed', routed: false }]);
+  };
+  const loadAgentCost = async () => {
+    const r = await fetch(`${API}/api/agents/cost`, { headers: { authorization: `Bearer ${token}` } }).then((x) => x.json()).catch(() => null);
+    if (r) setAgentCost(r);
+  };
+  const loadSyncStatus = async () => {
+    const r = await fetch(`${API}/api/attendance/offline-sync/status`, { headers: { authorization: `Bearer ${token}` } }).then((x) => x.json()).catch(() => null);
+    if (r) setSyncStatus(r);
+  };
+  const selectedDraft = drafts.find((d) => d.id === selectedDraftId);
   const egp = (p: number) => (p / 100).toFixed(2);
   const saveSettings = async () => {
     let value: Record<string, unknown>;
@@ -153,10 +217,11 @@ function App() {
         {token && <p>✓ {lang === 'ar' ? 'مسجَّل — تم تحميل الفروع والموظفين والقوالب' : 'Logged in — branches, employees and templates loaded'}</p>}
       </section>
       <nav style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['payroll', t.payroll], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
-          <button key={p} onClick={() => setPage(p)} disabled={p === page}>{label}</button>
+        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['payroll', t.payroll], ['agents', t.agents], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
+          <button key={p} onClick={() => { setPage(p); if (p === 'agents') { void loadBriefing(); void loadDrafts(); void loadAgentCost(); void loadSyncStatus(); } }} disabled={p === page}>{label}</button>
         ))}
       </nav>
+      {offlineRosterNote && <p style={{ background: '#fff3cd', padding: 8 }}>⚠ {offlineRosterNote}</p>}
 
       {page === 'dashboard' && <section><h2>{t.dash}</h2><p>{t.demo}</p><p>EGP / Africa/Cairo. Money in piasters. NOSI employer rate: UNRESOLVED — no default shipped; payroll approval is BLOCKED until a reviewer sets it via Settings → Statutory rates.</p><p>{lang === 'ar' ? 'M3 يشمل: هياكل الرواتب، دورة تشغيل الرواتب (تجهيز ← مراجعة الشذوذ ← حساب ← اعتماد وقفل ← صرف بملف بنك)، كشوف رواتب عربية قابلة للطباعة، تقارير (ملخص، تكلفة صاحب العمل، ضريبة وتأمينات، حضور، تكلفة العمل)، وتصدير CSV مسجَّل. قواعد الضريبة (قانون 7 لسنة 2024) والعمل الإضافي (قانون 14 لسنة 2025) — REVIEWER-UNCONFIRMED.' : 'M3 covers: salary structures, payroll run workflow (prepare → anomaly review → calculate → approve & lock → pay via bank file), Arabic printable payslips, reports (summary, employer cost, tax & NOSI, attendance, labour cost), and logged CSV export. Tax (Law 7/2024) and overtime (Law 14/2025) rules — REVIEWER-UNCONFIRMED.'}</p></section>}
 
@@ -229,6 +294,7 @@ function App() {
         <ul>{runs.map((r) => <li key={r.id}>{r.period} — <b>{r.status}</b> — {lang === 'ar' ? 'إجمالي' : 'gross'} {egp(r.totalGrossPiasters)} / {lang === 'ar' ? 'صافي' : 'net'} {egp(r.totalNetPiasters)} — {lang === 'ar' ? 'تأمينات صاحب العمل' : 'employer NOSI'}: {r.totalEmployerNosiPiasters === null ? (lang === 'ar' ? 'قيد الانتظار' : 'PENDING') : egp(r.totalEmployerNosiPiasters)}{' '}
           <button onClick={async () => { setSelectedRunId(r.id); await loadPayslips(r.id); }} disabled={!token}>{lang === 'ar' ? 'كشوف الرواتب' : 'Payslips'}</button>{' '}
           {r.status === 'prepared' && <><button onClick={async () => { await api(`/api/payroll/runs/${r.id}/review`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '2 — مراجعة الشذوذ' : '2 — Review anomalies'}</button>{' '}
+          <button onClick={async () => { await runAgent3(r.id); setSelectedRunId(r.id); }} disabled={!token}>{lang === 'ar' ? '2 — فاحص الوكيل 3' : '2 — Agent 3 checker'}</button>{' '}
           <button onClick={async () => { await api(`/api/payroll/runs/${r.id}/calculate`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '3 — حساب' : '3 — Calculate'}</button></>}
           {r.status === 'calculated' && <><button onClick={async () => { await api(`/api/payroll/runs/${r.id}/approve`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '4 — اعتماد (عرض التكلفة أولاً)' : '4 — Approve (show cost first)'}</button>{' '}
           <button onClick={async () => { await api(`/api/payroll/runs/${r.id}/approve`, 'POST', { confirmTotalCost: true }); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '4 — تأكيد الاعتماد والقفل' : '4 — Confirm approve & lock'}</button></>}
@@ -237,6 +303,8 @@ function App() {
           {r.status === 'calculated' || r.status === 'locked' || r.status === 'paid' ? <button onClick={async () => { const res = await fetch(`${API}/api/payroll/runs/${r.id}/export?kind=register`, { headers: { authorization: `Bearer ${token}` } }); setOut(await res.text()); }} disabled={!token}>CSV {lang === 'ar' ? 'سجل الرواتب' : 'register'}</button> : null}
           {r.anomalies?.length > 0 && <ul>{r.anomalies.map((a, i) => <li key={i}><b>{a.kind}</b> — {a.employeeId}: {a.message}</li>)}</ul>}
         </li>)}</ul>
+        {agentAnomalies.length > 0 && <><h3>{lang === 'ar' ? 'شذوذ الوكيل 3 (مرتّب، بالمبالغ)' : 'Agent 3 anomalies (ranked, with amounts)'}</h3>
+        <ul>{agentAnomalies.map((a, i) => <li key={i}><b>{a.severity}</b> — {a.kind} — {a.employeeId}: {a.message}{a.amountPiasters !== undefined ? ` — EGP ${(a.amountPiasters / 100).toFixed(2)}` : ''}</li>)}</ul></>}
         {selectedRunId && <><h3>{lang === 'ar' ? 'كشوف الرواتب' : 'Payslips'} ({selectedRunId})</h3>
         <ul>{payslips.map((p) => <li key={p.id}>{p.employeeId} — {lang === 'ar' ? 'إجمالي' : 'gross'} {egp(p.grossPiasters)} — {lang === 'ar' ? 'ضريبة' : 'tax'} {egp(p.incomeTaxPiasters)} — <b>{lang === 'ar' ? 'صافي' : 'net'} {egp(p.netPiasters)}</b>{p.belowMinimumWage ? ` — ⚠ ${lang === 'ar' ? 'أقل من الحد الأدنى للأجور' : 'below minimum wage'}` : ''}{' '}
           <button onClick={() => viewPayslipHtml(p.id)} disabled={!token}>{lang === 'ar' ? 'عرض كشف قابل للطباعة' : 'View printable payslip'}</button>
@@ -248,11 +316,63 @@ function App() {
         <p>{lang === 'ar' ? 'كل تصدير يُسجَّل في سجل التصدير. التشغيل المقفل لا يُعاد حسابه أبداً — التصحيح يكون بتسوية في تشغيل لاحق فقط.' : 'Every export is logged. A locked run is never recalculated — corrections go only to a later run as adjustments.'}</p>
       </section>}
 
-      {page === 'settings' && <section><h2>{t.settings} — §10 Areas 2–4, 6–9</h2>
-        <select value={settingsArea} onChange={(e) => setSettingsArea(e.target.value as 'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data')}>
+      {page === 'agents' && <section><h2>{t.agents} — M4 v1 (STUBBED)</h2>
+        <p>{lang === 'ar' ? 'الوكلاء يقترحون فقط — لا يغيّر أي وكيل راتباً أو يوافق على إجازة أو ينشر جدولاً أو يعاقب أحداً من تلقاء نفسه. كل مخرجاتهم تُركَّب من بيانات المنتج (أسماء وتواريخ ومبالغ من البيانات المنظمة) وتُسجَّل مع قرار الإنسان. التكلفة تقدير تجريبي ثابت لكل تشغيل.' : 'Agents propose only — no agent changes pay, approves leave, publishes a roster, or disciplines anyone on its own. Every output is composed from product data (names, dates, amounts from structured data) and recorded with the human decision. Cost is a fixed stub estimate per run.'}</p>
+
+        <h3>{lang === 'ar' ? '1 — الإحاطة اليومية للمالك' : '1 — Daily owner briefing'}</h3>
+        <button onClick={runBriefingNow} disabled={!token}>{lang === 'ar' ? 'تشغيل إحاطة اليوم' : 'Run today’s briefing'}</button>{' '}
+        <button onClick={loadBriefing} disabled={!token}>{lang === 'ar' ? 'عرض الأخيرة' : 'View latest'}</button>
+        {briefing && <div style={{ whiteSpace: 'pre-wrap', background: '#f4f6f3', padding: 12, marginTop: 8 }}>{lang === 'ar' ? briefing.textAr : briefing.textEn}<p><b>{lang === 'ar' ? 'الإجراء الأهم: ' : 'Top action: '}</b>{lang === 'ar' ? briefing.topActionAr : briefing.topActionEn}</p></div>}
+
+        <h3>{lang === 'ar' ? '2 — منشئ الجداول (مسودة فقط — لا ينشر نفسه أبداً)' : '2 — Schedule builder (draft only — never self-publishes)'}</h3>
+        <button onClick={async () => { await api('/api/agents/schedule/draft', 'POST', { branchId, weekStart }); await loadDrafts(); }} disabled={!token}>{lang === 'ar' ? 'إنشاء مسودة للأسبوع' : 'Draft next week'} ({weekStart} — {branchId})</button>{' '}
+        <button onClick={() => loadDrafts()} disabled={!token}>{lang === 'ar' ? 'تحديث' : 'Refresh'}</button>
+        <ul>{drafts.map((d) => <li key={d.id}>{d.weekStart} — {d.branchId} — <b>{d.status}</b> — {d.suggestions.length} {lang === 'ar' ? 'اقتراح' : 'suggestions'}{' '}
+          <button onClick={() => setSelectedDraftId(d.id)} disabled={!token}>{lang === 'ar' ? 'مراجعة' : 'Review'}</button></li>)}</ul>
+        {selectedDraft && <div>
+          <h4>{lang === 'ar' ? 'مراجعة المسودة' : 'Review draft'} {selectedDraft.weekStart} ({selectedDraft.status})</h4>
+          <ul>{selectedDraft.suggestions.map((s) => <li key={s.id}>{s.date} — {s.employeeId} — {s.shiftTemplateId} — {lang === 'ar' ? s.reasonAr : s.reasonEn} {s.violations.length > 0 && <span>⚠ {s.violations.map((v) => v.reasonAr).join('؛ ')}</span>}{' '}
+            <button onClick={() => setDraftDecisions((m) => ({ ...m, [s.id]: 'accepted' }))}>{lang === 'ar' ? 'قبول' : 'Accept'}</button>{' '}
+            <select value={draftEdits[s.id] ?? s.shiftTemplateId} onChange={(e) => { setDraftEdits((m) => ({ ...m, [s.id]: e.target.value })); setDraftDecisions((m) => ({ ...m, [s.id]: 'edited' })); }}>{templates.map((x) => <option key={x.id} value={x.id}>{x.nameEn}</option>)}</select>{' '}
+            <button onClick={() => setDraftDecisions((m) => ({ ...m, [s.id]: 'rejected' }))}>{lang === 'ar' ? 'رفض' : 'Reject'}</button>{' '}
+            <span>{draftDecisions[s.id] ?? s.decision}</span>
+          </li>)}</ul>
+          <button onClick={async () => { const decisions = selectedDraft.suggestions.map((s) => ({ suggestionId: s.id, decision: draftDecisions[s.id] ?? 'accepted', editedShiftTemplateId: draftEdits[s.id] })); await api(`/api/agents/schedule/drafts/${selectedDraft.id}/review`, 'POST', { decisions }); await loadDrafts(); }} disabled={!token}>{lang === 'ar' ? 'حفظ المراجعة' : 'Save review'}</button>{' '}
+          <button onClick={async () => { await api(`/api/agents/schedule/drafts/${selectedDraft.id}/publish`, 'POST', {}); await loadDrafts(); await loadRosters(); }} disabled={!token || selectedDraft.status !== 'reviewed'}>{lang === 'ar' ? 'نشر بعد المراجعة' : 'Publish after review'}</button>
+          <p>{lang === 'ar' ? 'النشر يتطلب مراجعة بشرية كاملة أولاً؛ الاقتراحات المرفوضة لا تُنشَر.' : 'Publishing requires a full human review first; rejected suggestions are not published.'}</p>
+        </div>}
+
+        <h3>{lang === 'ar' ? '3 — فاحص شذوذ الرواتب' : '3 — Pre-payroll anomaly checker'}</h3>
+        <p>{lang === 'ar' ? 'اختر تشغيلاً من صفحة الرواتب أو أدخل معرّفه هنا، ثم شغّل الفاحص. القرار لك — كل علامة وقرار يُسجَّلان.' : 'Pick a run from the Payroll page or paste its id here, then run the checker. The decision is yours — every flag and decision is logged.'}</p>
+        <label>runId <input value={selectedRunId} onChange={(e) => setSelectedRunId(e.target.value)} size={30} /></label>{' '}
+        <button onClick={() => runAgent3(selectedRunId)} disabled={!token || !selectedRunId}>{lang === 'ar' ? 'تشغيل الفاحص' : 'Run checker'}</button>
+        <ul>{agentAnomalies.map((a, i) => <li key={i}><b>{a.severity}</b> — {a.kind} — {a.employeeId}: {a.message}{a.amountPiasters !== undefined ? ` — EGP ${(a.amountPiasters / 100).toFixed(2)}` : ''}{' '}
+          <button onClick={() => decideAnomaly(selectedRunId, `${a.employeeId}:${a.kind}`, 'accepted')} disabled={!token}>{lang === 'ar' ? 'قبول العلامة' : 'Accept flag'}</button>{' '}
+          <button onClick={() => decideAnomaly(selectedRunId, `${a.employeeId}:${a.kind}`, 'dismissed')} disabled={!token}>{lang === 'ar' ? 'تجاهل' : 'Dismiss'}</button>
+        </li>)}</ul>
+
+        <h3>{lang === 'ar' ? '4 — أسئلة الموظفين (بياناتك أنت فقط)' : '4 — Employee Q&A (your data only)'}</h3>
+        <p>{lang === 'ar' ? 'سجّل الدخول بحساب موظف مرتبط (تجريبي: employee@demo-cafe.eg). الإجابات عن الخصومات مقتبسة من كشف راتبك — لا يُعاد حساب الأجر. الأسئلة غير المفهومة تُحوَّل إلى مديرك.' : 'Log in with a linked employee account (demo: employee@demo-cafe.eg). Deduction answers quote your payslip — pay is never recalculated. Unanswered questions route to your manager.'}</p>
+        <input value={qaQuestion} onChange={(e) => setQaQuestion(e.target.value)} size={50} />{' '}
+        <button onClick={askQa} disabled={!token}>{lang === 'ar' ? 'اسأل' : 'Ask'}</button>
+        <ul>{qaMessages.map((m, i) => <li key={i}><b>Q:</b> {m.q}<br /><b>A:</b> {m.a}{m.routed ? ` (${lang === 'ar' ? 'تم التحويل إلى المدير' : 'routed to manager'})` : ''}</li>)}</ul>
+
+        <h3>{lang === 'ar' ? 'التكلفة ومفاتيح الإيقاف' : 'Cost & kill switches'}</h3>
+        <button onClick={loadAgentCost} disabled={!token}>{lang === 'ar' ? 'عرض التكلفة' : 'View cost'}</button>{' '}
+        <button onClick={loadSyncStatus} disabled={!token}>{lang === 'ar' ? 'حالة مزامنة دون اتصال' : 'Offline sync status'}</button>
+        {agentCost && <ul>{agentCost.perAgent.map((a) => <li key={a.agentId}>{a.agentId}: EGP {(a.monthCostPiasters / 100).toFixed(2)} / {lang === 'ar' ? 'الحد' : 'cap'} EGP {(a.capPiasters / 100).toFixed(2)}{a.paused ? ` — ⏸ ${lang === 'ar' ? 'متوقف مؤقتاً' : 'paused'}` : ''}{' '}
+          <button onClick={async () => { await api('/api/agents/kill-switch', 'POST', { agentId: a.agentId, scope: 'tenant', killed: !a.paused }); await loadAgentCost(); }} disabled={!token}>{a.paused ? (lang === 'ar' ? 'إعادة التشغيل' : 'Resume') : (lang === 'ar' ? 'إيقاف مؤقت' : 'Pause')}</button>
+        </li>)}</ul>}
+        {syncStatus && <p>{lang === 'ar' ? 'مزامنة دون اتصال — مقبول' : 'Offline sync — accepted'}: {syncStatus.accepted} | {lang === 'ar' ? 'متعارض' : 'conflicted'}: {syncStatus.conflicted} | {lang === 'ar' ? 'قيد المراجعة' : 'pending'}: {syncStatus.pending}</p>}
+        <p>{lang === 'ar' ? 'تجاوز الحد أو مفتاح الإيقاف يوقف الوكيل فقط — الحضور والرواتب لا يتوقفان أبداً.' : 'A cap breach or kill switch pauses the agent only — attendance and payroll never stop.'}</p>
+      </section>}
+
+      {page === 'settings' && <section><h2>{t.settings} — §10 Areas 2–4, 6–9, 10 (AI agents)</h2>
+        <select value={settingsArea} onChange={(e) => setSettingsArea(e.target.value as 'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data' | 'ai_agents')}>
           <option value="attendance">2 — Attendance</option><option value="shifts">3 — Shifts</option><option value="leave">4 — Leave</option>
           <option value="payroll_structure">6 — Payroll structure</option><option value="statutory_rates">7 — Statutory rates (guarded)</option>
           <option value="notifications">8 — Notifications / WhatsApp</option><option value="integrations_billing_data">9 — Integrations, billing, data</option>
+          <option value="ai_agents">10 — AI agents (caps, kill switches)</option>
         </select>{' '}
         <button onClick={loadSettings} disabled={!token}>{lang === 'ar' ? 'تحميل' : 'Load'}</button>
         <div><textarea value={settingsJson} onChange={(e) => setSettingsJson(e.target.value)} rows={14} cols={80} /></div>

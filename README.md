@@ -4,8 +4,8 @@ Standalone codebase for the HR & Payroll SaaS described in the v2 product brief
 (`hr-payroll-product-brief.pdf`, 28 pages). Beachhead: 5–30 staff restaurants,
 cafés and small frontline businesses in Egypt, sold first through Zad.
 
-> **Scope — M1 Foundation + M2 Attendance & Shifts + M3 Payroll MVP.** M1: multi-tenancy, auth,
-> roles, Settings framework (§10), Superadmin Lite (§11), seed demo data,
+> **Scope — M1 Foundation + M2 Attendance & Shifts + M3 Payroll MVP + M4 AI agents v1.**
+> M1: multi-tenancy, auth, roles, Settings framework (§10), Superadmin Lite (§11), seed demo data,
 > Docker Compose. M2: attendance Modes A (QR + geofence) and B (passcode +
 > photo kiosk), exception queue, roster templates + publish with WhatsApp
 > notify (**stubbed**), swaps, open shifts, leave + Egypt 2026 holidays, and
@@ -17,7 +17,15 @@ cafés and small frontline businesses in Egypt, sold first through Zad.
 > next-run adjustments only, reports + logged CSV exports, and Settings
 > screens for Payroll Structure, Statutory Rates, Notifications and
 > Integrations/Billing/Data (§10 Areas 6–9).
-> It does **not** build ZKTeco sync, live WhatsApp sending, or AI agents — those are M4 / V1.
+> M4: four AI agents v1 (daily owner briefing, schedule builder, pre-payroll
+> anomaly checker, employee Q&A) on a **STUBBED** deterministic LLM provider
+> (no real key, no real calls), agent-run audit trail + per-agent cost ledger
+> with caps and kill switches, user↔employee linking for self-service,
+> offline sync hardening (signed-timestamp verification, sync-status
+> endpoint, cached roster viewing), tenant health snapshot + masked
+> ticket-context for support, and Settings Area 10 (AI agents).
+> It does **not** build ZKTeco sync, live WhatsApp sending, a real LLM, or
+> the full Superadmin console — those are V1.
 
 ## Stack
 
@@ -52,7 +60,7 @@ npm run seed --workspace=@hr-payroll/api   # seeds the demo café (see below)
 npm run dev --workspace=@hr-payroll/api
 ```
 
-Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"m3"}`
+Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"m4"}`
 
 ## Tests
 
@@ -226,12 +234,117 @@ but no accountant has reconciled a live month against the product yet.
 Prerequisite: the M0 payroll reviewer confirms the tax/overtime rule set and
 the NOSI employer rate (see M0 below).
 
-## What M4 should build next
+## M4 — AI agents v1 + pilot hardening (Brief §8, §15 M4)
 
-AI v1 (Agents 1 + 3: daily owner briefing, pre-payroll anomaly checker),
-offline hardening, support tooling; then V1 (ZKTeco sync, mobile biometrics,
-Agents 2 + 4, Zad integration, full Superadmin console). M4 must not start
-before the M3 exit criterion: a parallel run matching the accountant's figures.
+- **LLM provider is STUBBED** (`apps/api/src/agentCore.ts`): `LlmProvider`
+  with `generateStructured(prompt, schema)`; the `StubLlmProvider` composes
+  outputs deterministically from structured inputs via the pure logic in
+  `packages/shared/src/agents.ts` — names, dates and amounts are rendered
+  from data, never generated as free text. No real LLM key exists, no real
+  API calls are made. An `HttpLlmProvider` adapter (OpenAI-compatible) is
+  defined and only activates when `LLM_API_KEY` is set in the environment;
+  the key is never committed and never logged. Real per-token cost accounting
+  must replace the stub estimates in V1.
+- **Agent 1 — Daily owner briefing** (`POST /api/agents/briefing/run`,
+  `GET /api/agents/briefing/latest`): yesterday's attendance (present/late/
+  absent/missing clock-out, with names), today's uncovered shifts (coverage
+  minimums), leave, labour cost to date vs the same point last month
+  (daily rate × worked days; honestly reported as missing when there is no
+  prior-month data), open exceptions, and the one action that matters most
+  (uncovered shift > missing clock-out > absence > late > cost jump).
+  Arabic first, WhatsApp via the stubbed notifier + in-app. Facts only.
+- **Agent 2 — Schedule builder** (`POST /api/agents/schedule/draft`,
+  `/api/agents/schedule/drafts/:id/review|publish`): draft roster for next
+  week from the last 8 weeks of published rosters/attendance + coverage
+  rules + approved leave; every suggestion shows its reason (history count)
+  and its rest / weekly-hours / consecutive-days / coverage violations with
+  a score. **Draft ONLY — it never auto-publishes.** A manager reviews each
+  suggestion (accept/edit/reject) and only then publishes through the
+  existing M2 publish flow (which notifies via stubbed WhatsApp).
+- **Agent 3 — Pre-payroll anomaly checker** (`POST /api/agents/anomaly/run`,
+  `/api/agents/anomaly/decisions`, wired into the M3 review step 2
+  `POST /api/payroll/runs/:id/review`): ranked anomalies with amounts in
+  EGP — duplicate payment (block), overtime spike vs the employee's own
+  history, missing clock-outs priced as full days, plus the M3 base check
+  (OT > 50% of basic, below minimum wage, sharp net move, zero attendance
+  but full pay). The owner decides (accept/dismiss with a note); all flags
+  and decisions are audit-logged. If the agent is paused, the review step
+  still returns the M3 base check — **an agent pause never blocks payroll**.
+- **Agent 4 — Employee Q&A** (`POST /api/agents/qa/ask`,
+  `GET /api/agents/qa/mine`, `/api/agents/qa/routed`): Arabic answers to
+  "next shift?", "leave balance?", "why was EGP X deducted?" — traced to the
+  actual payslip lines, never recalculating pay. The employee sees ONLY
+  their own data: the M3-flagged gap is fixed by linking a user account to
+  an employee record (`POST /api/employees/link`, owner only;
+  `GET /api/me/employee`), with tenant + ownership checks on every
+  self-service read (payslip list, single payslip, printable payslip).
+  Unanswered questions route to the manager (`routed_questions`) for a human
+  answer.
+- **Guardrails (tested)**: no agent changes pay, approves leave, publishes a
+  roster, or disciplines anyone; every agent output cites its source
+  numbers; every run is recorded (inputs SHA-256 hash, output, stubbed cost
+  in piasters, status, human decision) in `agent_runs` + `agent_cost_ledger`.
+  Cost per tenant per month is visible (`GET /api/agents/cost`) with a
+  configurable cap (default EGP 500/agent/month, Settings Area 10 or
+  `POST /api/agents/cost/cap`); exceeding the cap pauses that agent only.
+  Kill switch per agent, per tenant (`POST /api/agents/kill-switch`,
+  scope `tenant`, owner) and globally (scope `global`, superadmin + MFA),
+  plus Settings Area 10 kill switches.
+- **Offline hardening**: the M2 offline queue now verifies signed timestamps
+  (HMAC-SHA256 when `OFFLINE_SIGNING_SECRET` is set; legacy mode accepts
+  any non-empty signature, flagged as such, so existing kiosk clients keep
+  working). Conflict rules: duplicate / unsigned / bad signature /
+  overlapping active session are held for review with no record created;
+  stale records are created but flagged `pending_review`. Every record is
+  written to the sync log; `GET /api/attendance/offline-sync/status`
+  reports pending/accepted/conflicted counts. The web caches the last
+  published roster in localStorage and shows a staleness banner when
+  offline. Payroll calculation stays server-side only.
+- **Support tooling** (superadmin + MFA): `GET /api/superadmin/tenants/:id/health`
+  — setup incomplete, branches with no clock-ins today, stuck payroll runs,
+  WhatsApp delivery (stubbed rates, labelled as such), per-agent cost/pause
+  state; `GET /api/superadmin/tenants/:id/ticket-context` — masked view
+  (names initialled, phones partially masked, no photos, no salary figures).
+- **Settings Area 10 — AI agents** (§10): provider (`stub`), monthly cap
+  per agent, kill switches, briefing send time/language — owner change,
+  accountant/branch-manager view, employee none.
+- **Seed**: demo employee login `employee@demo-cafe.eg` / `DemoEmp123!`
+  linked to emp-demo-1, plus demo agent runs (one briefing for 2026-11-11,
+  one Zamalek draft for week 2026-11-16, one anomaly check on the Nov run,
+  three Q&A exchanges).
+- **Web** (`apps/web/src/main.tsx`): Agents page — briefing view, schedule-draft
+  review (accept/edit/reject per suggestion, publish after review), anomaly
+  review on the payroll wizard and the Agents page, employee Q&A chat-style
+  view, cost + kill switches, offline sync status. English toggle still works.
+
+### M4 API endpoints (all tenant-scoped, JWT; superadmin ones need MFA)
+`POST /api/agents/briefing/run`, `GET /api/agents/briefing/latest`,
+`POST /api/agents/schedule/draft`, `GET /api/agents/schedule/drafts[/:id]`,
+`POST /api/agents/schedule/drafts/:id/review|publish`,
+`POST /api/agents/anomaly/run`, `POST /api/agents/anomaly/decisions`,
+`POST /api/agents/qa/ask`, `GET /api/agents/qa/mine`, `GET /api/agents/qa/routed`,
+`POST /api/agents/qa/routed/:id/answer`, `POST /api/employees/link`,
+`GET /api/me/employee`, `GET /api/agents/status|runs|cost`,
+`POST /api/agents/cost/cap`, `POST /api/agents/kill-switch`,
+`GET /api/attendance/offline-sync/status`,
+`GET /api/superadmin/tenants/:id/health|ticket-context`.
+
+### M4 exit criterion (Brief §15)
+> First live (non-parallel) payroll paid through the product.
+
+**Not yet met — needs a real pilot.** The code for it is complete and tested
+(see below), but no live branch has run it and no live payroll has been paid
+through the product. The M3 exit criterion (parallel run matching the
+accountant's figures) is likewise still open pending the M0 reviewer.
+
+## What V1 builds next
+
+ZKTeco sync add-on, mobile biometrics, iOS app, Zad integration, full
+Superadmin console (billing ops and dunning, tenant health, support console,
+AI cost and kill switches, vendor analytics — §11), a real LLM provider with
+per-token cost accounting (replacing the M4 stub estimates), and live
+WhatsApp via 360dialog/Gupshup. V1 must not start before the M4 exit
+criterion: a first live payroll paid through the product.
 
 ## M0 — payroll reviewer (BLOCKER, not code)
 

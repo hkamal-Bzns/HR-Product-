@@ -6,8 +6,9 @@ import { store } from './server.js';
 import { hashPassword } from './auth.js';
 import { clockIn, clockOut, sweepMissedClockOuts } from './attendance.js';
 import { approveLeave } from './leave.js';
-import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS, DEFAULT_PAYROLL_STRUCTURE_SETTINGS, DEFAULT_STATUTORY_SETTINGS, DEFAULT_NOTIFICATIONS_SETTINGS, DEFAULT_INTEGRATIONS_SETTINGS } from '@hr-payroll/shared';
+import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS, DEFAULT_PAYROLL_STRUCTURE_SETTINGS, DEFAULT_STATUTORY_SETTINGS, DEFAULT_NOTIFICATIONS_SETTINGS, DEFAULT_INTEGRATIONS_SETTINGS, DEFAULT_AI_AGENTS_SETTINGS } from '@hr-payroll/shared';
 import { calculateRun } from './payroll.js';
+import { runBriefing, runScheduleDraft, runAnomalyCheck, answerQa } from './agents.js';
 import { newId } from '@hr-payroll/db';
 
 export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
@@ -20,6 +21,9 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   store.addUser({ id: 'user-owner', tenantId, email: 'owner@demo-cafe.eg', phone: '+201012345678', passwordHash: ownerHash, role: 'owner', branchId: null });
   store.addUser({ id: 'user-acct', tenantId, email: 'accountant@demo-cafe.eg', phone: '+201112345678', passwordHash: acctHash, role: 'accountant', branchId: null });
   store.addUser({ id: 'user-mgr', tenantId, email: 'manager@demo-cafe.eg', phone: '+201212345678', passwordHash: mgrHash, role: 'branch_manager', branchId: 'branch-zamalek' });
+  // M4: employee self-service login, linked to emp-demo-1 (Ahmed Mohamed).
+  const empHash = await hashPassword('DemoEmp123!');
+  store.addUser({ id: 'user-emp1', tenantId, email: 'employee@demo-cafe.eg', phone: '+201012345679', passwordHash: empHash, role: 'employee', branchId: 'branch-zamalek', employeeId: 'emp-demo-1' });
 
   // Branches with real geofence centres (Cairo).
   store.branches.push(
@@ -78,6 +82,8 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   store.saveSettings({ id: 'seed-s6', tenantId, area: 'payroll_structure', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_PAYROLL_STRUCTURE_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
   store.saveSettings({ id: 'seed-s7', tenantId, area: 'notifications', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_NOTIFICATIONS_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
   store.saveSettings({ id: 'seed-s8', tenantId, area: 'integrations_billing_data', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_INTEGRATIONS_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
+  // M4 — AI-agents Settings v1 (Area 10): STUBBED provider, EGP 500/month cap per agent, no kill switches.
+  store.saveSettings({ id: 'seed-s9', tenantId, area: 'ai_agents', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_AI_AGENTS_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
 
   // Kiosk: consent + passcode enrolment for emp-demo-1 (passcode 1234, demo only).
   store.kioskConsents.push({ tenantId, employeeId: 'emp-demo-1', consented: true, noticeShownAt: '2026-11-08T09:00:00Z', consentedAt: '2026-11-08T09:00:00Z', retentionDays: 90 });
@@ -152,10 +158,25 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   store.payrollRuns.push(demoRun);
   calculateRun(store, tenantId, demoRun);
 
+  // --- M4 demo agent runs (Brief §8; LLM STUBBED — deterministic outputs) ---
+  // Briefing for 2026-11-11 (yesterday 2026-11-10: 4 clock-ins, 1 late,
+  // 2 missing clock-outs; no October attendance, so the last-month labour
+  // comparison is honestly reported as missing data).
+  await runBriefing(store, tenantId, '2026-11-11', 'user-owner');
+  // Schedule draft for week 2026-11-16 (Zamalek) — DRAFT ONLY, never published.
+  await runScheduleDraft(store, tenantId, 'branch-zamalek', '2026-11-16', 'user-owner');
+  // Anomaly check on the Nov 2026 run (missing clock-outs priced as full days).
+  await runAnomalyCheck(store, tenantId, demoRun, 'user-owner');
+  // Q&A exchanges for emp-demo-1 (linked employee user): next shift, leave
+  // balance, and a deduction traced to the Nov payslip (NOSI EGP 1,100).
+  await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'ما هي ورديتي القادمة؟');
+  await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'كم رصيد إجازتي السنوية؟');
+  await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'لماذا تم خصم 1100 جنيه من راتبي؟');
+
   store.seeded = true;
   return { seeded: true, tenantId };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  seed().then((r) => { console.log(r.seeded ? 'seeded demo café tenant (M1+M2+M3)' : 'already seeded — nothing changed', r); });
+  seed().then((r) => { console.log(r.seeded ? 'seeded demo café tenant (M1+M2+M3+M4)' : 'already seeded — nothing changed', r); });
 }
