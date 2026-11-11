@@ -1,4 +1,5 @@
 // @hr-payroll/shared — pure, dependency-free helpers.
+export * from './payroll.js';
 // Money is integer piasters everywhere. Phones normalise to +20….
 // No payroll rates are asserted here: the NOSI employer rate is UNRESOLVED
 // (Brief v2 §7/§10) and must stay null until a payroll reviewer confirms it at M0.
@@ -370,5 +371,78 @@ export function detectDangerousChange(area: string, oldValue: Record<string, unk
     if (newCap > oldCap) reasons.push(`raising daily overtime cap from ${oldCap} to ${newCap} minutes`);
   }
   if (area === 'statutory_rates') reasons.push('statutory rate edit');
+  if (area === 'payroll_structure' && oldValue) {
+    const oldDay = Number(oldValue.payDay ?? 28);
+    const newDay = Number(newValue.payDay ?? oldDay);
+    if (newDay !== oldDay) reasons.push(`changing pay day from ${oldDay} to ${newDay} — affects every employee's pay date`);
+    const oldPeriod = String(oldValue.payPeriod ?? 'monthly');
+    const newPeriod = String(newValue.payPeriod ?? oldPeriod);
+    if (newPeriod !== oldPeriod) reasons.push(`changing pay period from ${oldPeriod} to ${newPeriod}`);
+  }
   return reasons;
 }
+
+// --- M3 defaults: Settings Areas 6–9 (Brief §10) ----------------------------
+// Area 6 is client-owned (payroll structure); Area 7 is the vendor/reviewer's
+// versioned rule set — the client never invents statutory rates. The NOSI
+// employer rate stays null here too (M0 blocker).
+export const DEFAULT_PAYROLL_STRUCTURE_SETTINGS = {
+  payPeriod: 'monthly' as const,
+  payDay: 28,
+  currency: 'EGP',
+  allowances: [
+    { name: 'Transport', nameAr: 'بدل انتقال', fixedPiasters: 0, percentOfBasic: null as number | null, taxable: true, insurable: true },
+    { name: 'Meal', nameAr: 'بدل وجبة', fixedPiasters: 0, percentOfBasic: null as number | null, taxable: true, insurable: true },
+    { name: 'Housing', nameAr: 'بدل سكن', fixedPiasters: 0, percentOfBasic: null as number | null, taxable: true, insurable: true },
+  ],
+  deductionTypes: ['absence', 'lateness', 'advance', 'loan', 'penalty'],
+  templates: [
+    { name: 'Full-time', nameAr: 'دوام كامل', contractType: 'full_time', basicPiasters: 700000, allowancesPiasters: 50000 },
+    { name: 'Part-time', nameAr: 'دوام جزئي', contractType: 'part_time', basicPiasters: 400000, allowancesPiasters: 0 },
+  ],
+  advancePolicy: { maxAdvanceEgp: 5000, maxInstalments: 3, autoDeductPerRun: true },
+  loanPolicy: { maxLoanEgp: 20000, maxInstalments: 12, autoDeductPerRun: true },
+  defaultBank: null as string | null,
+  payslipLanguage: 'ar' as const,
+  payslipFooter: 'كشف راتب — القاهرة كافيه (تجريبي)',
+};
+
+export const DEFAULT_STATUTORY_SETTINGS = {
+  nosiEmployeePct: 11,
+  nosiEmployerPct: null as number | null, // UNRESOLVED — reviewer confirms at M0
+  nosiFloorEgp: 2700,
+  nosiCeilingEgp: 16700,
+  martyrsFundPct: 0.0002,
+  martyrsFundBasis: 'gross', // REVIEWER-UNCONFIRMED — see docs/tax-2024-research-note.md
+  minimumWageEgp: 7000,
+  taxRuleVersion: 1,
+  taxRuleStatus: 'REVIEWER-UNCONFIRMED',
+  overtimeRuleVersion: 1,
+  overtimeRuleStatus: 'REVIEWER-UNCONFIRMED',
+};
+
+export const DEFAULT_NOTIFICATIONS_SETTINGS = {
+  templates: [
+    { event: 'clock_in_exception', template: 'payslip_exception', enabled: true, language: 'ar' },
+    { event: 'roster_published', template: 'roster_published', enabled: true, language: 'ar' },
+    { event: 'swap_request', template: 'swap_request', enabled: true, language: 'ar' },
+    { event: 'leave_decision', template: 'leave_decision', enabled: true, language: 'ar' },
+    { event: 'payslip_sent', template: 'payslip_sent', enabled: true, language: 'ar' },
+    { event: 'payroll_approved', template: 'payroll_approved', enabled: true, language: 'ar' },
+  ],
+  dailyBriefing: { enabled: false, sendTime: '08:00', language: 'ar', recipients: ['owner'] as string[] },
+  ownerLanguage: 'ar' as const,
+  employeeLanguage: 'ar' as const,
+};
+
+export const DEFAULT_INTEGRATIONS_SETTINGS = {
+  zktecoDevices: [] as { branchId: string; name: string; model: string; syncStatus: string }[],
+  kioskTablets: [] as { name: string; branchId: string; bound: boolean; revoked: boolean }[],
+  whatsappBusinessNumber: null as string | null,
+  whatsappProvider: 'stub' as const, // STUBBED — live provider (360dialog/Gupshup) in V1
+  zadConnectionStatus: 'not_connected' as const,
+  plan: 'growth' as const,
+  staffCap: 20,
+  billing: { paymentMethod: null as string | null, invoices: [] as unknown[] },
+  dataExport: { photoRetentionDays: 90 },
+};

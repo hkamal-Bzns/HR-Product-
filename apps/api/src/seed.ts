@@ -6,7 +6,8 @@ import { store } from './server.js';
 import { hashPassword } from './auth.js';
 import { clockIn, clockOut, sweepMissedClockOuts } from './attendance.js';
 import { approveLeave } from './leave.js';
-import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS } from '@hr-payroll/shared';
+import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS, DEFAULT_PAYROLL_STRUCTURE_SETTINGS, DEFAULT_STATUTORY_SETTINGS, DEFAULT_NOTIFICATIONS_SETTINGS, DEFAULT_INTEGRATIONS_SETTINGS } from '@hr-payroll/shared';
+import { calculateRun } from './payroll.js';
 import { newId } from '@hr-payroll/db';
 
 export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
@@ -73,6 +74,10 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   store.saveSettings({ id: 'seed-s3', tenantId, area: 'statutory_rates', version: 1, effectiveFrom: '2026-11-08', value: { nosiEmployeePct: 11, nosiEmployerPct: null, nosiFloorEgp: 2700, nosiCeilingEgp: 16700, status: 'UNRESOLVED — needs reviewer confirmation at M0' }, changedByUserId: 'user-owner', reason: 'demo seed — no employer default shipped', createdAt: new Date().toISOString() });
   store.saveSettings({ id: 'seed-s4', tenantId, area: 'shifts', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_SHIFT_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
   store.saveSettings({ id: 'seed-s5', tenantId, area: 'leave', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_LEAVE_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
+  // M3 — Settings Areas 6–9 v1 (Brief §10). Statutory employer rate stays null.
+  store.saveSettings({ id: 'seed-s6', tenantId, area: 'payroll_structure', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_PAYROLL_STRUCTURE_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
+  store.saveSettings({ id: 'seed-s7', tenantId, area: 'notifications', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_NOTIFICATIONS_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
+  store.saveSettings({ id: 'seed-s8', tenantId, area: 'integrations_billing_data', version: 1, effectiveFrom: '2026-11-08', value: { ...DEFAULT_INTEGRATIONS_SETTINGS }, changedByUserId: 'user-owner', reason: 'demo seed', createdAt: new Date().toISOString() });
 
   // Kiosk: consent + passcode enrolment for emp-demo-1 (passcode 1234, demo only).
   store.kioskConsents.push({ tenantId, employeeId: 'emp-demo-1', consented: true, noticeShownAt: '2026-11-08T09:00:00Z', consentedAt: '2026-11-08T09:00:00Z', retentionDays: 90 });
@@ -108,10 +113,49 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   // Sweep at 22:00 Cairo: Split shifts ended 21:00 → missed-clock-out flags.
   sweepMissedClockOuts(store, tenantId, new Date('2026-11-10T20:00:00Z'));
 
+  // --- M3 demo payroll -------------------------------------------------------
+  // Salary structures for all 10 employees. emp-demo-1 follows the Brief
+  // Appendix A shape: basic EGP 8,000 + transport EGP 2,000 = EGP 10,000
+  // gross; the others use basic EGP 7,000 + EGP 500 allowances.
+  // Bank accounts are DEMO placeholders (generated files only, never real).
+  store.employees.forEach((emp, i) => {
+    const isAppendixA = emp.id === 'emp-demo-1';
+    store.salaryStructures.push({
+      id: newId('struct'), tenantId, employeeId: emp.id,
+      templateName: isAppendixA ? 'Appendix A demo' : 'Full-time',
+      basicPiasters: isAppendixA ? 800000 : 700000,
+      allowances: isAppendixA
+        ? [{ name: 'Transport', amountPiasters: 200000, taxable: true, insurable: true }]
+        : [{ name: 'Transport', amountPiasters: 50000, taxable: true, insurable: true }],
+      payPeriod: 'monthly', payDay: 28,
+      bankAccount: `DEMO-EG-100000000${i + 1}`, walletNumber: null,
+      advanceTotalPiasters: 0, advanceInstalmentPiasters: 0,
+      loanTotalPiasters: 0, loanInstalmentPiasters: 0,
+      effectiveFrom: '2026-11-01', version: 1,
+    });
+  });
+
+  // Prepared demo run for Nov 2026, calculated from the M2 attendance data
+  // above (one day of records; most staff show zero-attendance anomalies —
+  // that is the demo's point). Status: 'calculated'. It cannot be approved
+  // until a reviewer sets the NOSI employer rate (BLOCKED by design).
+  const demoRun = {
+    id: 'run-demo-2026-11', tenantId, period: '2026-11',
+    branchIds: ['branch-zamalek', 'branch-maadi'], status: 'prepared' as const,
+    warningsAccepted: [] as string[], anomalies: [] as unknown[],
+    totalGrossPiasters: 0, totalNetPiasters: 0, totalEmployeeNosiPiasters: 0, totalTaxPiasters: 0,
+    totalEmployerNosiPiasters: null as number | null, employerCostStatus: 'pending' as const,
+    taxRuleVersion: 1, taxRuleStatus: 'REVIEWER-UNCONFIRMED', overtimeRuleVersion: 1,
+    createdByUserId: 'user-owner', approvedByUserId: null, approvedAt: null, lockedAt: null, paidAt: null,
+    createdAt: new Date().toISOString(),
+  };
+  store.payrollRuns.push(demoRun);
+  calculateRun(store, tenantId, demoRun);
+
   store.seeded = true;
   return { seeded: true, tenantId };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  seed().then((r) => { console.log(r.seeded ? 'seeded demo café tenant (M1+M2)' : 'already seeded — nothing changed', r); });
+  seed().then((r) => { console.log(r.seeded ? 'seeded demo café tenant (M1+M2+M3)' : 'already seeded — nothing changed', r); });
 }

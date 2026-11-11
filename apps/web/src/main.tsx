@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
-type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'settings' | 'superadmin';
+type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin';
 
 function App() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
@@ -32,10 +32,18 @@ function App() {
   const [leaveType, setLeaveType] = useState('annual');
   const [leaveStart, setLeaveStart] = useState('2026-12-01');
   const [leaveEnd, setLeaveEnd] = useState('2026-12-02');
-  const [settingsArea, setSettingsArea] = useState<'attendance' | 'shifts' | 'leave'>('attendance');
+  const [settingsArea, setSettingsArea] = useState<'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data'>('attendance');
   const [settingsJson, setSettingsJson] = useState('');
   const [settingsReason, setSettingsReason] = useState('');
   const [confirmDangerous, setConfirmDangerous] = useState(false);
+  // --- M3 payroll ------------------------------------------------------------
+  const [payPeriod, setPayPeriod] = useState('2026-11');
+  const [runs, setRuns] = useState<{ id: string; period: string; status: string; totalGrossPiasters: number; totalNetPiasters: number; totalEmployerNosiPiasters: number | null; employerCostStatus: string; anomalies: { kind: string; message: string; employeeId: string }[] }[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState('');
+  const [payslips, setPayslips] = useState<{ id: string; employeeId: string; grossPiasters: number; employeeNosiPiasters: number; incomeTaxPiasters: number; netPiasters: number; employerNosiPiasters: number | null; belowMinimumWage: boolean }[]>([]);
+  const [payBank, setPayBank] = useState('CIB');
+  const [payslipHtml, setPayslipHtml] = useState('');
+  const [reportOut, setReportOut] = useState('');
   const [weekStart, setWeekStart] = useState('2026-11-16');
   const [rosterDate, setRosterDate] = useState('2026-11-16');
   const [templateId, setTemplateId] = useState('tpl-morning');
@@ -46,8 +54,8 @@ function App() {
   }, []);
 
   const t = lang === 'ar'
-    ? { title: 'الموارد البشرية والرواتب', sub: 'M2 — الحضور والورديات والإجازات: QR + تحديد الموقع، كشك الرمز + صورة، قائمة الاستثناءات، النشر + إشعار واتساب (تجريبي)، التبديلات، الإجازات', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', settings: 'الإعدادات', super: 'المشرف العام', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً.' }
-    : { title: 'HR & Payroll', sub: 'M2 — Attendance, Shifts & Leave: QR + geofence, kiosk passcode + photo, exception queue, publish + WhatsApp notify (stubbed), swaps, leave', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', settings: 'Settings', super: 'Superadmin', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent.' };
+    ? { title: 'الموارد البشرية والرواتب', sub: 'M3 — الرواتب: هيكل الرواتب، دورة التشغيل (تجهيز ← مراجعة ← حساب ← اعتماد ← صرف)، كشوف الرواتب، ملفات البنوك، التقارير. واتساب تجريبي (STUBBED).', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', payroll: 'الرواتب', settings: 'الإعدادات', super: 'المشرف العام', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً. ملفات البنوك مولَّدة فقط وليست صرفاً فعلياً.' }
+    : { title: 'HR & Payroll', sub: 'M3 — Payroll: salary structures, run workflow (prepare → review → calculate → approve → pay), payslips, bank files, reports. WhatsApp stubbed.', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', payroll: 'Payroll', settings: 'Settings', super: 'Superadmin', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent. Bank files are generated files, not disbursements.' };
 
   const authHeaders: Record<string, string> = token ? { authorization: `Bearer ${token}`, 'content-type': 'application/json' } : { 'content-type': 'application/json' };
   const api = async (path: string, method = 'GET', body?: unknown) => {
@@ -92,6 +100,24 @@ function App() {
     const { json } = await api(`/api/settings/${settingsArea}`);
     setSettingsJson(JSON.stringify(json.latest?.value ?? {}, null, 2));
   };
+  // --- M3 payroll helpers ----------------------------------------------------
+  const loadRuns = async (tok = token) => {
+    const r = await fetch(`${API}/api/payroll/runs`, { headers: { authorization: `Bearer ${tok}` } }).then((x) => x.json()).catch(() => ({}));
+    setRuns(r.runs ?? []);
+  };
+  const loadPayslips = async (runId: string, tok = token) => {
+    const r = await fetch(`${API}/api/payroll/runs/${runId}/payslips`, { headers: { authorization: `Bearer ${tok}` } }).then((x) => x.json()).catch(() => ({}));
+    setPayslips(r.payslips ?? []);
+  };
+  const loadReport = async (kind: string) => {
+    const r = await fetch(`${API}/api/payroll/reports/${kind}?period=${payPeriod}`, { headers: { authorization: `Bearer ${token}` } }).then((x) => x.json()).catch(() => ({}));
+    setReportOut(JSON.stringify(r, null, 2));
+  };
+  const viewPayslipHtml = async (payslipId: string) => {
+    const r = await fetch(`${API}/api/payroll/payslips/${payslipId}/html`, { headers: { authorization: `Bearer ${token}` } });
+    setPayslipHtml(await r.text());
+  };
+  const egp = (p: number) => (p / 100).toFixed(2);
   const saveSettings = async () => {
     let value: Record<string, unknown>;
     try { value = JSON.parse(settingsJson); } catch { setOut('Invalid JSON'); return; }
@@ -127,12 +153,12 @@ function App() {
         {token && <p>✓ {lang === 'ar' ? 'مسجَّل — تم تحميل الفروع والموظفين والقوالب' : 'Logged in — branches, employees and templates loaded'}</p>}
       </section>
       <nav style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
+        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['payroll', t.payroll], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
           <button key={p} onClick={() => setPage(p)} disabled={p === page}>{label}</button>
         ))}
       </nav>
 
-      {page === 'dashboard' && <section><h2>{t.dash}</h2><p>{t.demo}</p><p>EGP / Africa/Cairo. Money in piasters. NOSI employer rate: UNRESOLVED — no default shipped.</p><p>{lang === 'ar' ? 'M2 يشمل: الحضور (QR + تحديد الموقع / كشك الرمز + صورة)، قائمة الاستثناءات، قوالب الورديات والنشر، التبديلات والورديات المفتوحة، الإجازات والأرصدة.' : 'M2 covers: attendance (QR + geofence / kiosk passcode + photo), exception queue, roster templates + publish, swaps + open shifts, leave + balances.'}</p></section>}
+      {page === 'dashboard' && <section><h2>{t.dash}</h2><p>{t.demo}</p><p>EGP / Africa/Cairo. Money in piasters. NOSI employer rate: UNRESOLVED — no default shipped; payroll approval is BLOCKED until a reviewer sets it via Settings → Statutory rates.</p><p>{lang === 'ar' ? 'M3 يشمل: هياكل الرواتب، دورة تشغيل الرواتب (تجهيز ← مراجعة الشذوذ ← حساب ← اعتماد وقفل ← صرف بملف بنك)، كشوف رواتب عربية قابلة للطباعة، تقارير (ملخص، تكلفة صاحب العمل، ضريبة وتأمينات، حضور، تكلفة العمل)، وتصدير CSV مسجَّل. قواعد الضريبة (قانون 7 لسنة 2024) والعمل الإضافي (قانون 14 لسنة 2025) — REVIEWER-UNCONFIRMED.' : 'M3 covers: salary structures, payroll run workflow (prepare → anomaly review → calculate → approve & lock → pay via bank file), Arabic printable payslips, reports (summary, employer cost, tax & NOSI, attendance, labour cost), and logged CSV export. Tax (Law 7/2024) and overtime (Law 14/2025) rules — REVIEWER-UNCONFIRMED.'}</p></section>}
 
       {page === 'attendance' && <section><h2>{t.att}</h2>
         <label>{lang === 'ar' ? 'الفرع' : 'Branch'} <select value={branchId} onChange={(e) => { setBranchId(e.target.value); const b = branches.find((x) => x.id === e.target.value); if (b) { setLat(String(b.geofenceLat)); setLng(String(b.geofenceLng)); } }}>{branches.map((b) => <option key={b.id} value={b.id}>{lang === 'ar' ? b.nameAr : b.nameEn}</option>)}</select></label>{' '}
@@ -194,9 +220,39 @@ function App() {
         <ul>{holidays.map((h) => <li key={h.date}>{h.date} — {lang === 'ar' ? h.nameAr : h.nameEn}{h.provisional ? ' (provisional)' : ''}</li>)}</ul>
       </section>}
 
-      {page === 'settings' && <section><h2>{t.settings} — §10 Areas 2–4</h2>
-        <select value={settingsArea} onChange={(e) => setSettingsArea(e.target.value as 'attendance' | 'shifts' | 'leave')}>
+      {page === 'payroll' && <section><h2>{t.payroll} — {lang === 'ar' ? 'دورة التشغيل (5 خطوات)' : 'Run wizard (5 steps)'}</h2>
+        <p>{lang === 'ar' ? 'معدل تأمينات صاحب العمل غير مؤكد — الاعتماد محظور (BLOCKED) حتى يحدده المراجع من الإعدادات ← المعدلات القانونية. كشوف الموظفين صحيحة حتى أثناء الانتظار.' : 'Employer NOSI rate is unresolved — approval is BLOCKED until a reviewer sets it in Settings → Statutory rates. Employee payslips are correct while it is pending.'}</p>
+        <label>{lang === 'ar' ? 'الفترة' : 'Period'} <input value={payPeriod} onChange={(e) => setPayPeriod(e.target.value)} size={9} /></label>{' '}
+        <button onClick={async () => { await api('/api/payroll/runs', 'POST', { period: payPeriod }); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '1 — تجهيز' : '1 — Prepare'}</button>{' '}
+        <button onClick={() => loadRuns()} disabled={!token}>{lang === 'ar' ? 'تحديث القائمة' : 'Refresh runs'}</button>
+        <h3>{lang === 'ar' ? 'التشغيلات' : 'Runs'}</h3>
+        <ul>{runs.map((r) => <li key={r.id}>{r.period} — <b>{r.status}</b> — {lang === 'ar' ? 'إجمالي' : 'gross'} {egp(r.totalGrossPiasters)} / {lang === 'ar' ? 'صافي' : 'net'} {egp(r.totalNetPiasters)} — {lang === 'ar' ? 'تأمينات صاحب العمل' : 'employer NOSI'}: {r.totalEmployerNosiPiasters === null ? (lang === 'ar' ? 'قيد الانتظار' : 'PENDING') : egp(r.totalEmployerNosiPiasters)}{' '}
+          <button onClick={async () => { setSelectedRunId(r.id); await loadPayslips(r.id); }} disabled={!token}>{lang === 'ar' ? 'كشوف الرواتب' : 'Payslips'}</button>{' '}
+          {r.status === 'prepared' && <><button onClick={async () => { await api(`/api/payroll/runs/${r.id}/review`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '2 — مراجعة الشذوذ' : '2 — Review anomalies'}</button>{' '}
+          <button onClick={async () => { await api(`/api/payroll/runs/${r.id}/calculate`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '3 — حساب' : '3 — Calculate'}</button></>}
+          {r.status === 'calculated' && <><button onClick={async () => { await api(`/api/payroll/runs/${r.id}/approve`, 'POST', {}); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '4 — اعتماد (عرض التكلفة أولاً)' : '4 — Approve (show cost first)'}</button>{' '}
+          <button onClick={async () => { await api(`/api/payroll/runs/${r.id}/approve`, 'POST', { confirmTotalCost: true }); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '4 — تأكيد الاعتماد والقفل' : '4 — Confirm approve & lock'}</button></>}
+          {r.status === 'locked' && <><select value={payBank} onChange={(e) => setPayBank(e.target.value)}><option>CIB</option><option>QNB</option><option>NBE</option><option>Banque Misr</option></select>{' '}
+          <button onClick={async () => { await api(`/api/payroll/runs/${r.id}/pay`, 'POST', { bank: payBank }); await loadRuns(); }} disabled={!token}>{lang === 'ar' ? '5 — صرف (ملف بنك + كشوف واتساب تجريبي)' : '5 — Pay (bank file + stubbed WhatsApp payslips)'}</button></>}
+          {r.status === 'calculated' || r.status === 'locked' || r.status === 'paid' ? <button onClick={async () => { const res = await fetch(`${API}/api/payroll/runs/${r.id}/export?kind=register`, { headers: { authorization: `Bearer ${token}` } }); setOut(await res.text()); }} disabled={!token}>CSV {lang === 'ar' ? 'سجل الرواتب' : 'register'}</button> : null}
+          {r.anomalies?.length > 0 && <ul>{r.anomalies.map((a, i) => <li key={i}><b>{a.kind}</b> — {a.employeeId}: {a.message}</li>)}</ul>}
+        </li>)}</ul>
+        {selectedRunId && <><h3>{lang === 'ar' ? 'كشوف الرواتب' : 'Payslips'} ({selectedRunId})</h3>
+        <ul>{payslips.map((p) => <li key={p.id}>{p.employeeId} — {lang === 'ar' ? 'إجمالي' : 'gross'} {egp(p.grossPiasters)} — {lang === 'ar' ? 'ضريبة' : 'tax'} {egp(p.incomeTaxPiasters)} — <b>{lang === 'ar' ? 'صافي' : 'net'} {egp(p.netPiasters)}</b>{p.belowMinimumWage ? ` — ⚠ ${lang === 'ar' ? 'أقل من الحد الأدنى للأجور' : 'below minimum wage'}` : ''}{' '}
+          <button onClick={() => viewPayslipHtml(p.id)} disabled={!token}>{lang === 'ar' ? 'عرض كشف قابل للطباعة' : 'View printable payslip'}</button>
+        </li>)}</ul></>}
+        {payslipHtml && <iframe title="payslip" srcDoc={payslipHtml} style={{ width: '100%', height: 420, border: '1px solid #ccc' }} />}
+        <h3>{lang === 'ar' ? 'التقارير' : 'Reports'}</h3>
+        {(['summary', 'employer-cost', 'tax-nosi', 'attendance', 'labour-cost'] as const).map((k) => <span key={k}><button onClick={() => loadReport(k)} disabled={!token}>{k}</button>{' '}</span>)}
+        {reportOut && <pre style={{ background: '#f4f6f3', padding: 12, overflow: 'auto', maxHeight: 300, direction: 'ltr', textAlign: 'left' }}>{reportOut}</pre>}
+        <p>{lang === 'ar' ? 'كل تصدير يُسجَّل في سجل التصدير. التشغيل المقفل لا يُعاد حسابه أبداً — التصحيح يكون بتسوية في تشغيل لاحق فقط.' : 'Every export is logged. A locked run is never recalculated — corrections go only to a later run as adjustments.'}</p>
+      </section>}
+
+      {page === 'settings' && <section><h2>{t.settings} — §10 Areas 2–4, 6–9</h2>
+        <select value={settingsArea} onChange={(e) => setSettingsArea(e.target.value as 'attendance' | 'shifts' | 'leave' | 'payroll_structure' | 'statutory_rates' | 'notifications' | 'integrations_billing_data')}>
           <option value="attendance">2 — Attendance</option><option value="shifts">3 — Shifts</option><option value="leave">4 — Leave</option>
+          <option value="payroll_structure">6 — Payroll structure</option><option value="statutory_rates">7 — Statutory rates (guarded)</option>
+          <option value="notifications">8 — Notifications / WhatsApp</option><option value="integrations_billing_data">9 — Integrations, billing, data</option>
         </select>{' '}
         <button onClick={loadSettings} disabled={!token}>{lang === 'ar' ? 'تحميل' : 'Load'}</button>
         <div><textarea value={settingsJson} onChange={(e) => setSettingsJson(e.target.value)} rows={14} cols={80} /></div>

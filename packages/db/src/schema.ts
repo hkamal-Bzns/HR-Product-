@@ -55,6 +55,9 @@ export const employees = pgTable('employees', {
   // Salary is stored in piasters (integer). Demo data only in M1.
   basicSalaryPiasters: integer('basic_salary_piasters'),
   active: boolean('active').notNull().default(true),
+  // M3: bank / wallet details for payment files (generated files, not disbursement).
+  bankAccount: text('bank_account'),
+  walletNumber: text('wallet_number'),
 });
 
 // Settings framework (§10): versioned, effective-dated rule sets as data.
@@ -312,5 +315,116 @@ export const outboxMessages = pgTable('outbox_messages', {
   body: text('body').notNull(),
   status: text('status').notNull().default('queued_stubbed'),
   provider: text('provider').notNull().default('stub'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ============================================================================
+// M3 — Payroll MVP (Brief §7, §10 Areas 6–7, Appendix A/B). All tenant-scoped.
+// Locked runs immutable: payslips store their lines at calculation time;
+// corrections are payroll_adjustments applied to a LATER run only.
+// ============================================================================
+export const salaryStructures = pgTable('salary_structures', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  templateName: text('template_name'),
+  basicSalaryPiasters: integer('basic_salary_piasters').notNull(),
+  allowances: jsonb('allowances').notNull().default([]),
+  payPeriod: text('pay_period').notNull().default('monthly'),
+  payDay: integer('pay_day').notNull().default(28),
+  bankAccount: text('bank_account'),
+  walletNumber: text('wallet_number'),
+  advanceTotalPiasters: integer('advance_total_piasters').notNull().default(0),
+  advanceInstalmentPiasters: integer('advance_instalment_piasters').notNull().default(0),
+  loanTotalPiasters: integer('loan_total_piasters').notNull().default(0),
+  loanInstalmentPiasters: integer('loan_instalment_piasters').notNull().default(0),
+  effectiveFrom: text('effective_from').notNull(),
+  version: integer('version').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const payrollRuns = pgTable('payroll_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  period: text('period').notNull(), // YYYY-MM
+  branchIds: jsonb('branch_ids').notNull().default([]),
+  status: text('status').notNull().default('draft'), // draft | prepared | calculated | approved | locked | paid
+  warningsAccepted: jsonb('warnings_accepted').notNull().default([]),
+  anomalies: jsonb('anomalies').notNull().default([]),
+  totalGrossPiasters: integer('total_gross_piasters').notNull().default(0),
+  totalNetPiasters: integer('total_net_piasters').notNull().default(0),
+  totalEmployeeNosiPiasters: integer('total_employee_nosi_piasters').notNull().default(0),
+  totalTaxPiasters: integer('total_tax_piasters').notNull().default(0),
+  totalEmployerNosiPiasters: integer('total_employer_nosi_piasters'), // NULL = PENDING
+  employerCostStatus: text('employer_cost_status').notNull().default('pending'),
+  taxRuleVersion: integer('tax_rule_version').notNull().default(1),
+  taxRuleStatus: text('tax_rule_status').notNull().default('REVIEWER-UNCONFIRMED'),
+  overtimeRuleVersion: integer('overtime_rule_version').notNull().default(1),
+  createdByUserId: uuid('created_by_user_id'),
+  approvedByUserId: uuid('approved_by_user_id'),
+  approvedAt: timestamp('approved_at'),
+  lockedAt: timestamp('locked_at'),
+  paidAt: timestamp('paid_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const payslips = pgTable('payslips', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  runId: uuid('run_id').notNull().references(() => payrollRuns.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  period: text('period').notNull(),
+  lines: jsonb('lines').notNull().default([]),
+  grossPiasters: integer('gross_piasters').notNull().default(0),
+  employeeNosiPiasters: integer('employee_nosi_piasters').notNull().default(0),
+  incomeTaxPiasters: integer('income_tax_piasters').notNull().default(0),
+  martyrsLevyPiasters: integer('martyrs_levy_piasters').notNull().default(0),
+  totalDeductionsPiasters: integer('total_deductions_piasters').notNull().default(0),
+  netPiasters: integer('net_piasters').notNull().default(0),
+  employerNosiPiasters: integer('employer_nosi_piasters'), // NULL = PENDING
+  totalEmployerCostPiasters: integer('total_employer_cost_piasters'),
+  insurableWagePiasters: integer('insurable_wage_piasters').notNull().default(0),
+  workedDays: integer('worked_days').notNull().default(0),
+  regularHoursPiasters: integer('regular_hours_piasters').notNull().default(0),
+  overtimeMinutes: jsonb('overtime_minutes').notNull().default({}),
+  belowMinimumWage: boolean('below_minimum_wage').notNull().default(false),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const payrollAdjustments = pgTable('payroll_adjustments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  sourceRunId: uuid('source_run_id').references(() => payrollRuns.id),
+  targetPeriod: text('target_period').notNull(),
+  amountPiasters: integer('amount_piasters').notNull(), // signed
+  reason: text('reason').notNull(),
+  status: text('status').notNull().default('pending'), // pending | applied
+  createdByUserId: uuid('created_by_user_id'),
+  appliedRunId: uuid('applied_run_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const bankFiles = pgTable('bank_files', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  runId: uuid('run_id').notNull().references(() => payrollRuns.id),
+  bank: text('bank').notNull(), // CIB | QNB | NBE | Banque Misr
+  filename: text('filename').notNull(),
+  content: text('content').notNull(),
+  totalPiasters: integer('total_piasters').notNull().default(0),
+  recordCount: integer('record_count').notNull().default(0),
+  note: text('note').notNull().default('GENERATED FILE — not a disbursement. No money moved.'),
+  generatedByUserId: uuid('generated_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const exportLog = pgTable('export_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  runId: uuid('run_id').references(() => payrollRuns.id),
+  kind: text('kind').notNull(), // register | summary | employer_cost | tax_nosi | attendance | labour_cost | bank_file | payslip
+  format: text('format').notNull(), // csv | html
+  generatedByUserId: uuid('generated_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

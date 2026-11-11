@@ -8,6 +8,7 @@ import { normalizePhone, SETTINGS_AREAS, type SettingsArea } from '@hr-payroll/s
 import { verifyPassword, verifySession, signSession } from './auth.js';
 import { changeSettings } from './settings.js';
 import { registerM2 } from './m2.js';
+import { registerM3 } from './payroll.js';
 
 export const store = new MemoryStore();
 
@@ -22,9 +23,10 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
     return verifySession(token.slice(7), opts.jwtSecret);
   };
 
-  app.get('/health', async () => ({ status: 'ok', scope: 'm2', tenantCount: store.tenants.size }));
+  app.get('/health', async () => ({ status: 'ok', scope: 'm3', tenantCount: store.tenants.size }));
 
   registerM2(app, store, opts.jwtSecret);
+  registerM3(app, store, opts.jwtSecret);
 
   app.post('/auth/login', async (req, reply) => {
     const body = req.body as { tenantSlug?: string; email?: string; password?: string };
@@ -64,6 +66,8 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
         changedByUserId: claims.sub, role: claims.role as never,
         reason: body.reason, effectiveFrom: body.effectiveFrom,
         confirmDangerous: body.confirmDangerous,
+        // Guardrail 2 (M3): a statutory change may not back-date into a locked payroll period.
+        lockedUntil: area === 'statutory_rates' ? (store.lockedUntil(claims.tenantId) ?? undefined) : undefined,
       });
       return reply.code(201).send(result);
     } catch (e) {

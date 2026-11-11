@@ -4,14 +4,20 @@ Standalone codebase for the HR & Payroll SaaS described in the v2 product brief
 (`hr-payroll-product-brief.pdf`, 28 pages). Beachhead: 5–30 staff restaurants,
 cafés and small frontline businesses in Egypt, sold first through Zad.
 
-> **Scope — M1 Foundation + M2 Attendance & Shifts.** M1: multi-tenancy, auth,
+> **Scope — M1 Foundation + M2 Attendance & Shifts + M3 Payroll MVP.** M1: multi-tenancy, auth,
 > roles, Settings framework (§10), Superadmin Lite (§11), seed demo data,
 > Docker Compose. M2: attendance Modes A (QR + geofence) and B (passcode +
 > photo kiosk), exception queue, roster templates + publish with WhatsApp
 > notify (**stubbed**), swaps, open shifts, leave + Egypt 2026 holidays, and
 > Settings screens for Attendance, Shifts and Leave (§10 Areas 2–4).
-> It does **not** build payroll calculation, ZKTeco sync, live WhatsApp
-> sending, or AI agents — those are M3–M4 / V1.
+> M3: salary structures, 5-step payroll runs (prepare → review anomalies →
+> calculate → approve/lock → pay), tax / NOSI / levies engine (Law 7/2024,
+> **REVIEWER-UNCONFIRMED**), Arabic printable payslips, CIB/QNB/NBE/Banque Misr
+> bank files (**generated files, not disbursement**), locked runs with
+> next-run adjustments only, reports + logged CSV exports, and Settings
+> screens for Payroll Structure, Statutory Rates, Notifications and
+> Integrations/Billing/Data (§10 Areas 6–9).
+> It does **not** build ZKTeco sync, live WhatsApp sending, or AI agents — those are M4 / V1.
 
 ## Stack
 
@@ -46,7 +52,7 @@ npm run seed --workspace=@hr-payroll/api   # seeds the demo café (see below)
 npm run dev --workspace=@hr-payroll/api
 ```
 
-Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"m2"}`
+Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"m3"}`
 
 ## Tests
 
@@ -131,6 +137,12 @@ One Egyptian café tenant — `demo-cafe` (القاهرة كافيه):
   leave (emp-demo-6, 2026-11-12 → 13) with its roster days marked on-leave
 - Kiosk consent + passcode enrolment for emp-demo-1 (passcode `1234`, demo only)
 - Settings v1 for attendance, shifts and leave (shipped defaults, §10 guardrail 5)
+- Salary structures for all 10 employees (emp-demo-1 follows Brief Appendix A:
+  basic EGP 8,000 + transport EGP 2,000 = EGP 10,000 gross) + Settings v1 for
+  payroll structure, notifications and integrations (§10 Areas 6, 8, 9)
+- A **calculated demo payroll run for Nov 2026** (`run-demo-2026-11`, 10 payslips,
+  totals reconcile; employer cost PENDING — see M3 below). It cannot be approved
+  until a reviewer sets the NOSI employer rate.
 - No real people, no real salaries — demo figures only, in piasters.
 
 Seed is idempotent: re-running it reports `already_seeded` and changes nothing.
@@ -148,22 +160,90 @@ Seed is idempotent: re-running it reports `already_seeded` and changes nothing.
 `GET /api/leave/balances|holidays|who-off|requests`, `POST /api/leave/requests`,
 `POST /api/leave/requests/:id/approve|reject`, `GET /api/outbox` (stubbed).
 
+## M3 — Payroll MVP (Brief §7, §10 Areas 6–9, Appendix A/B)
+
+- **Engine** (`packages/shared/src/payroll.ts`, pure, piasters only): pro-rating
+  by calendar days (joiner/leaver), overtime priced from verified attendance
+  (day 1.35× / night 1.70× / rest day 2.00× / public holiday 3.00×, Labour Law
+  14/2025), NOSI insurable wage clamped to EGP 2,700–16,700 with employee 11%,
+  income tax per Law 7/2024 brackets (annualised, EGP 20,000 personal exemption,
+  phase-out above EGP 600,000), Martyrs' Fund levy 0.0002% on gross,
+  EGP 7,000 minimum-wage flag, advance/loan instalments, next-run adjustments.
+  **The whole tax/overtime rule set is flagged REVIEWER-UNCONFIRMED** — see
+  `docs/tax-2024-research-note.md` for the sources and the open questions
+  (phase-out basis, levy basis, holiday 3.00× vs 2.00×, night window).
+- **NOSI employer rate — still BLOCKED.** No default is shipped anywhere.
+  `employerNosiPiasters()` returns null, employee payslips calculate correctly
+  while employer cost is PENDING, and a run **refuses to finalise** (409
+  `EMPLOYER_NOSI_RATE_UNRESOLVED`) until a reviewer sets the rate through the
+  guarded versioned Settings change (owner/accountant, effective date, reason,
+  impact preview, audit log). Employer contributions are never shown as an
+  employee deduction. Tests set the rate only through that same Settings flow.
+- **Run workflow** (`apps/api/src/payroll.ts`): 1) Prepare (period + branches,
+  pulls verified attendance / approved leave / swaps / overtime; unresolved
+  exceptions block calculation until resolved or explicitly accepted by the
+  owner, choice recorded) → 2) Review anomalies (missing clock-outs, overtime
+  spikes, below-minimum-wage, sharp net moves vs last month, zero attendance
+  but full pay) → 3) Calculate (line-by-line payslips stored; sum of payslips
+  = run total = payment-file total, re-checked on export) → 4) Approve
+  (owner only, second confirmation showing total employer cost; run locks) →
+  5) Pay (bank file + payslips via **stubbed** WhatsApp + in-app).
+  Locked runs are immutable — corrections only as next-run adjustments, and a
+  statutory change may not back-date into a locked period.
+- **Bank files**: CIB / QNB / Banque Misr / NBE CSV layouts, clearly marked
+  `GENERATED FILE — not a disbursement. No money moved.` Payslips are Arabic-first
+  (printable HTML view + stubbed WhatsApp); PDF is the printable view, not a binary.
+- **Reports**: payroll summary/register, employer cost report, tax + NOSI
+  summaries, attendance/lateness, labour cost per branch per day. Exports are
+  CSV (+ printable HTML); **every export is logged** (`GET /api/payroll/exports`).
+- **Settings Areas 6–9** via the M1 framework: payroll structure (allowances,
+  deduction types, templates, advance/loan policy, pay period/day, bank/wallet),
+  statutory rates (guarded per §10), notifications/WhatsApp templates, and
+  integrations/billing/data (ZKTeco devices, kiosk tablets, WhatsApp number —
+  provider still `stub`).
+- **Golden cases — all pass** (`packages/shared/test/payroll.test.ts`,
+  `apps/api/test/m3.test.ts`): Appendix A worked example (gross 10,000,
+  NOSI 1,100, tax 592.50, levy 0.02, net 8,307.48, employer PENDING);
+  joiner/leaver mid-month pro-rating; NOSI floor 2,700 and ceiling 16,700;
+  pay below EGP 7,000 flagged; overtime on rest day and public holiday;
+  unpaid leave day; advance/loan deduction across two months; locked run
+  corrected only via next-run adjustment. Plus: zero-pay leaver gets no NOSI
+  floor (net 0, not −297) and tax phase-out above EGP 600,000.
+
+### M3 API endpoints (all tenant-scoped, JWT)
+`GET|POST /api/payroll/structures`, `POST /api/payroll/runs` (prepare),
+`GET /api/payroll/runs[/:id]`, `POST /api/payroll/runs/:id/review|calculate|approve|pay|bank-file`,
+`GET /api/payroll/runs/:id/payslips|export?kind=register|summary`,
+`GET /api/payroll/payslips/:id|html`, `GET|POST /api/payroll/adjustments`,
+`GET /api/payroll/reports/summary|employer-cost|tax-nosi|attendance|labour-cost`,
+`GET /api/payroll/exports`, `GET /api/payroll/bank-files`.
+
+### M3 exit criterion (Brief §15)
+> Parallel run matches the accountant's figures to the pound on golden cases (Appendix B).
+
+**Not yet met — needs a real parallel run.** The golden cases pass in tests,
+but no accountant has reconciled a live month against the product yet.
+Prerequisite: the M0 payroll reviewer confirms the tax/overtime rule set and
+the NOSI employer rate (see M0 below).
+
+## What M4 should build next
+
+AI v1 (Agents 1 + 3: daily owner briefing, pre-payroll anomaly checker),
+offline hardening, support tooling; then V1 (ZKTeco sync, mobile biometrics,
+Agents 2 + 4, Zad integration, full Superadmin console). M4 must not start
+before the M3 exit criterion: a parallel run matching the accountant's figures.
+
 ## M0 — payroll reviewer (BLOCKER, not code)
 
 The NOSI employer contribution rate is **UNRESOLVED** in the brief (v1 stated 21%,
 earlier research indicated 18.75%, employee 11% in both). This repo ships **no
 employer NOSI default** — the field is `null` and flagged `needsReviewerConfirmation`.
-Do not invent a rate and do not hard-code 21%. A payroll reviewer must confirm the
-correct rate at M0 before any payroll engine (M3) is built or any live run is made.
-
-## What M3 should build next
-
-Payroll MVP: salary structures, run workflow, tax / NOSI / levies engine, payslips
-(WhatsApp + PDF), bank files, locked runs, reports; Settings screens for Payroll
-Structure and Statutory Rates (Areas 6–7) with guardrails, plus Notifications,
-Billing and Data screens (Areas 8–9). M3 must not start before M2's exit
-criterion: a pilot branch runs two full weeks with no paper fallback. The M0
-NOSI employer-rate blocker is still open — no employer default is shipped.
+Do not invent a rate and do not hard-code 21%. M3 was built with the guardrail
+instead of the rate: the engine calculates employee payslips correctly, but a
+run **cannot be finalised** until a payroll reviewer confirms the rate at M0
+and sets it through the guarded Settings change. The reviewer must also confirm
+the tax/overtime rule set (see `docs/tax-2024-research-note.md`) before any
+live run is paid.
 
 ## What I need from Hazem
 

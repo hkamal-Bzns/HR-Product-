@@ -47,6 +47,13 @@ export class MemoryStore {
   swapRequests: SwapRequestRecord[] = [];
   openShifts: OpenShiftRecord[] = [];
   outbox: OutboxRecord[] = [];
+  // --- M3 payroll ------------------------------------------------------------
+  salaryStructures: SalaryStructureRecord[] = [];
+  payrollRuns: PayrollRunRecord[] = [];
+  payslips: PayslipRecord[] = [];
+  payrollAdjustments: PayrollAdjustmentRecord[] = [];
+  bankFiles: BankFileRecord[] = [];
+  exportLog: ExportLogRecord[] = [];
   usedQrNonces = new Set<string>();
   lastPunchByEmployee = new Map<string, { lat: number; lng: number; atMs: number }>();
   settings = new Map<string, SettingsRecord[]>(); // key: tenantId:area
@@ -126,6 +133,40 @@ export class MemoryStore {
   leaveBalanceFor(tenantId: string, employeeId: string, year: number, type: string): LeaveBalanceRecord | undefined {
     return this.leaveBalances.find((b) => b.tenantId === tenantId && b.employeeId === employeeId && b.year === year && b.type === type);
   }
+  // --- M3 tenant-scoped helpers -------------------------------------------
+  listSalaryStructures(tenantId: string): SalaryStructureRecord[] { return this.salaryStructures.filter((s) => s.tenantId === tenantId); }
+  structureFor(tenantId: string, employeeId: string): SalaryStructureRecord | undefined {
+    const list = this.salaryStructures.filter((s) => s.tenantId === tenantId && s.employeeId === employeeId);
+    return list[list.length - 1];
+  }
+  listPayrollRuns(tenantId: string): PayrollRunRecord[] { return this.payrollRuns.filter((r) => r.tenantId === tenantId); }
+  getPayrollRun(tenantId: string, id: string): PayrollRunRecord {
+    const r = this.payrollRuns.find((x) => x.id === id);
+    if (!r) throw new Error('payroll run not found');
+    assertSameTenant(tenantId, r.tenantId);
+    return r;
+  }
+  listPayslips(tenantId: string, runId?: string): PayslipRecord[] {
+    return this.payslips.filter((p) => p.tenantId === tenantId && (!runId || p.runId === runId));
+  }
+  getPayslip(tenantId: string, id: string): PayslipRecord {
+    const p = this.payslips.find((x) => x.id === id);
+    if (!p) throw new Error('payslip not found');
+    assertSameTenant(tenantId, p.tenantId);
+    return p;
+  }
+  /** Latest locked run's period end (YYYY-MM-DD) — statutory changes may not
+   *  back-date into it (Brief §10 guardrail 2). */
+  lockedUntil(tenantId: string): string | null {
+    const locked = this.payrollRuns.filter((r) => r.tenantId === tenantId && (r.status === 'locked' || r.status === 'paid' || r.status === 'approved'));
+    if (locked.length === 0) return null;
+    const last = locked.map((r) => r.period).sort().pop()!;
+    const [y, m] = last.split('-').map(Number);
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  }
+  pendingAdjustments(tenantId: string, employeeId: string, targetPeriod: string): PayrollAdjustmentRecord[] {
+    return this.payrollAdjustments.filter((a) => a.tenantId === tenantId && a.employeeId === employeeId && a.targetPeriod === targetPeriod && a.status === 'pending');
+  }
 }
 // ============================================================================
 // M2 — MemoryStore extensions (dev/test). Same tenancy rule: every record
@@ -141,6 +182,8 @@ export interface EmployeeRecord {
   fullNameEn?: string | null; phone: string; jobTitle: string;
   basicSalaryPiasters: number;
   contractType?: string; allowancesPiasters?: number; startDate?: string;
+  endDate?: string | null; active?: boolean;
+  bankAccount?: string | null; walletNumber?: string | null;
   nationalIdLast4?: string | null;
 }
 export interface ShiftTemplateRecord {
@@ -204,6 +247,59 @@ export interface OpenShiftRecord {
 export interface OutboxRecord {
   id: string; tenantId: string; toPhone: string; template: string; body: string;
   status: 'queued_stubbed'; provider: 'stub'; createdAt: string;
+}
+
+// ============================================================================
+// M3 — Payroll (Brief §7, Appendix A/B). Locked runs immutable; corrections
+// only as payroll_adjustments on a later run.
+// ============================================================================
+export interface SalaryStructureRecord {
+  id: string; tenantId: string; employeeId: string; templateName: string | null;
+  basicPiasters: number;
+  allowances: { name: string; amountPiasters: number; taxable: boolean; insurable: boolean }[];
+  payPeriod: string; payDay: number;
+  bankAccount: string | null; walletNumber: string | null;
+  advanceTotalPiasters: number; advanceInstalmentPiasters: number;
+  loanTotalPiasters: number; loanInstalmentPiasters: number;
+  effectiveFrom: string; version: number;
+}
+export type PayrollRunStatus = 'draft' | 'prepared' | 'calculated' | 'approved' | 'locked' | 'paid';
+export interface PayrollRunRecord {
+  id: string; tenantId: string; period: string; branchIds: string[];
+  status: PayrollRunStatus;
+  warningsAccepted: string[]; anomalies: unknown[];
+  totalGrossPiasters: number; totalNetPiasters: number;
+  totalEmployeeNosiPiasters: number; totalTaxPiasters: number;
+  totalEmployerNosiPiasters: number | null;
+  employerCostStatus: 'pending' | 'ready';
+  taxRuleVersion: number; taxRuleStatus: string; overtimeRuleVersion: number;
+  createdByUserId: string | null; approvedByUserId: string | null;
+  approvedAt: string | null; lockedAt: string | null; paidAt: string | null;
+  createdAt: string;
+}
+export interface PayslipRecord {
+  id: string; tenantId: string; runId: string; employeeId: string; period: string;
+  lines: { label: string; labelAr: string; amountPiasters: number; kind: string }[];
+  grossPiasters: number; employeeNosiPiasters: number; incomeTaxPiasters: number;
+  martyrsLevyPiasters: number; totalDeductionsPiasters: number; netPiasters: number;
+  employerNosiPiasters: number | null; totalEmployerCostPiasters: number | null;
+  insurableWagePiasters: number; workedDays: number; regularHoursPiasters: number;
+  overtimeMinutes: { dayMin: number; nightMin: number; restDayMin: number; publicHolidayMin: number };
+  belowMinimumWage: boolean;
+}
+export interface PayrollAdjustmentRecord {
+  id: string; tenantId: string; employeeId: string; sourceRunId: string | null;
+  targetPeriod: string; amountPiasters: number; reason: string;
+  status: 'pending' | 'applied'; createdByUserId: string | null; appliedRunId: string | null;
+}
+export interface BankFileRecord {
+  id: string; tenantId: string; runId: string; bank: string; filename: string;
+  content: string; totalPiasters: number; recordCount: number;
+  note: string; generatedByUserId: string | null; createdAt: string;
+}
+export interface ExportLogRecord {
+  id: string; tenantId: string; runId: string | null; kind: string; format: string;
+  generatedByUserId: string | null; createdAt: string;
 }
 
 export function newId(prefix: string): string {
