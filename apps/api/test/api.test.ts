@@ -14,10 +14,10 @@ test.before(async () => {
 });
 test.after(async () => { await app.close(); });
 
-test('health reports M1 scope', async () => {
+test('health reports M2 scope', async () => {
   const res = await app.inject({ method: 'GET', url: '/health' });
   assert.equal(res.statusCode, 200);
-  assert.equal(res.json().scope, 'm1');
+  assert.equal(res.json().scope, 'm2');
 });
 
 test('login works for the demo owner, fails with wrong password', async () => {

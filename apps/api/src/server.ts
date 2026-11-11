@@ -7,6 +7,7 @@ import { MemoryStore } from '@hr-payroll/db';
 import { normalizePhone, SETTINGS_AREAS, type SettingsArea } from '@hr-payroll/shared';
 import { verifyPassword, verifySession, signSession } from './auth.js';
 import { changeSettings } from './settings.js';
+import { registerM2 } from './m2.js';
 
 export const store = new MemoryStore();
 
@@ -21,7 +22,9 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
     return verifySession(token.slice(7), opts.jwtSecret);
   };
 
-  app.get('/health', async () => ({ status: 'ok', scope: 'm1', tenantCount: store.tenants.size }));
+  app.get('/health', async () => ({ status: 'ok', scope: 'm2', tenantCount: store.tenants.size }));
+
+  registerM2(app, store, opts.jwtSecret);
 
   app.post('/auth/login', async (req, reply) => {
     const body = req.body as { tenantSlug?: string; email?: string; password?: string };
@@ -52,7 +55,7 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
       const claims = auth(req);
       if (!claims.tenantId) return reply.code(403).send({ error: 'tenant session required' });
       const area = (req.params as { area: string }).area as SettingsArea;
-      const body = req.body as { value?: Record<string, unknown>; reason?: string; effectiveFrom?: string };
+      const body = req.body as { value?: Record<string, unknown>; reason?: string; effectiveFrom?: string; confirmDangerous?: boolean };
       if (!body?.value || !body?.reason || !body?.effectiveFrom) {
         return reply.code(400).send({ error: 'value, reason and effectiveFrom are required' });
       }
@@ -60,6 +63,7 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
         store, tenantId: claims.tenantId, area, value: body.value,
         changedByUserId: claims.sub, role: claims.role as never,
         reason: body.reason, effectiveFrom: body.effectiveFrom,
+        confirmDangerous: body.confirmDangerous,
       });
       return reply.code(201).send(result);
     } catch (e) {
