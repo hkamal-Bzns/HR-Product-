@@ -15,5 +15,8 @@
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
     }
+  },
+  "dependencies": {
+    "typescript": "^5.9.3"
   }
 }
