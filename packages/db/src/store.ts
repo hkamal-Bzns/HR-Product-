@@ -69,6 +69,22 @@ export class MemoryStore {
   routedQuestions: RoutedQuestionRecord[] = [];
   offlineSyncLog: OfflineSyncRecord[] = [];
   usedQrNonces = new Set<string>();
+  usedBiometricNonces = new Set<string>();
+  // --- V1 ---------------------------------------------------------------
+  zktecoDevices: ZktecoDeviceRecord[] = [];
+  zktecoMappings: ZktecoMappingRecord[] = [];
+  zktecoPunches: ZktecoPunchRecord[] = [];
+  biometricDevices: BiometricDeviceRecord[] = [];
+  consents: ConsentRecord[] = [];
+  dsrRequests: DsrRequestRecord[] = [];
+  planCatalogue: PlanCatalogueRecord[] = [];
+  subscriptions: SubscriptionRecord[] = [];
+  invoices: InvoiceRecord[] = [];
+  statutoryRules: StatutoryRuleRecord[] = [];
+  tenantNotifications: TenantNotificationRecord[] = [];
+  superadminUsers: SuperadminUserRecord[] = [];
+  superadminAudit: SuperadminAuditRecord[] = [];
+  breakGlassSessions: BreakGlassSessionRecord[] = [];
   lastPunchByEmployee = new Map<string, { lat: number; lng: number; atMs: number }>();
   settings = new Map<string, SettingsRecord[]>(); // key: tenantId:area
   audit: AuditRecord[] = [];
@@ -206,6 +222,37 @@ export class MemoryStore {
   }
   listRoutedQuestions(tenantId: string, employeeId?: string): RoutedQuestionRecord[] {
     return this.routedQuestions.filter((q) => q.tenantId === tenantId && (!employeeId || q.employeeId === employeeId));
+  }
+  // --- V1 tenant-scoped helpers -------------------------------------------
+  listZktecoDevices(tenantId: string): ZktecoDeviceRecord[] { return this.zktecoDevices.filter((d) => d.tenantId === tenantId); }
+  getZktecoDevice(tenantId: string, id: string): ZktecoDeviceRecord {
+    const d = this.zktecoDevices.find((x) => x.id === id);
+    if (!d) throw new Error('device not found');
+    assertSameTenant(tenantId, d.tenantId);
+    return d;
+  }
+  activeConsent(tenantId: string, employeeId: string, purpose: string): ConsentRecord | undefined {
+    const list = this.consents.filter((c) => c.tenantId === tenantId && c.employeeId === employeeId && c.purpose === purpose && c.consented && c.status === 'active' && !c.withdrawnAt);
+    return list[list.length - 1];
+  }
+  listConsents(tenantId: string, employeeId?: string): ConsentRecord[] {
+    return this.consents.filter((c) => c.tenantId === tenantId && (!employeeId || c.employeeId === employeeId));
+  }
+  getSubscription(tenantId: string): SubscriptionRecord | undefined {
+    const list = this.subscriptions.filter((s) => s.tenantId === tenantId);
+    return list[list.length - 1];
+  }
+  /** Effective plan: subscription plan wins; falls back to the tenant record. */
+  effectivePlan(tenantId: string): { plan: string; addons: string[] } {
+    const sub = this.getSubscription(tenantId);
+    const t = this.tenants.get(tenantId);
+    return { plan: sub?.plan ?? t?.plan ?? 'free', addons: sub?.addons ?? [] };
+  }
+  listStatutoryRules(): StatutoryRuleRecord[] { return this.statutoryRules; }
+  getStatutoryRule(id: string): StatutoryRuleRecord {
+    const r = this.statutoryRules.find((x) => x.id === id);
+    if (!r) throw new Error('statutory rule version not found');
+    return r;
   }
 }
 // ============================================================================
@@ -394,6 +441,84 @@ export interface OfflineSyncRecord {
   id: string; tenantId: string; employeeId: string; deviceAt: string;
   outcome: 'accepted' | 'duplicate' | 'conflict_overlap' | 'stale' | 'unsigned' | 'invalid_signature';
   reason: string; signatureStatus: string; createdAt: string;
+}
+
+// ============================================================================
+// V1 — ZKTeco (C1), mobile biometrics (C2), PDPL consent (§12), Superadmin
+// full console (§11), Zad stub (§9). BiometricDeviceRecord stores a PUBLIC
+// KEY ONLY — no template, no private key, ever.
+// ============================================================================
+export interface ZktecoDeviceRecord {
+  id: string; tenantId: string; branchId: string | null; name: string; model: string;
+  serial: string; adapter: 'stub-adms'; syncStatus: 'ok' | 'stale' | 'failing' | 'never_synced';
+  lastSyncAt: string | null; lastError: string | null; lastClockDriftSeconds: number | null;
+  createdAt: string;
+}
+export interface ZktecoMappingRecord {
+  id: string; tenantId: string; deviceId: string; deviceUserId: string;
+  employeeId: string; createdByUserId: string | null; createdAt: string;
+}
+export interface ZktecoPunchRecord {
+  id: string; tenantId: string; deviceId: string; deviceUserId: string;
+  employeeId: string | null; deviceAt: string; direction: 'in' | 'out';
+  dedupKey: string; clockDriftSeconds: number | null; source: 'stub-adms';
+  attendanceRecordId: string | null; createdAt: string;
+}
+export interface BiometricDeviceRecord {
+  id: string; tenantId: string; employeeId: string; deviceName: string;
+  platform: 'android' | 'ios';
+  /** Ed25519 public key (PEM) only. Private key + biometric template stay on the device OS. */
+  publicKeyPem: string;
+  consentId: string | null; revoked: boolean; revokedAt: string | null;
+  lastUsedAt: string | null; createdAt: string;
+}
+export interface ConsentRecord {
+  id: string; tenantId: string; employeeId: string; purpose: string;
+  consented: boolean; status: 'active' | 'withdrawn' | 'expired';
+  consentText: string; method: 'written_signed' | 'in_app_signed' | 'whatsapp_confirmed';
+  version: string; consentedAt: string | null; withdrawnAt: string | null; createdAt: string;
+}
+export interface DsrRequestRecord {
+  id: string; tenantId: string; employeeId: string | null; kind: 'access' | 'export' | 'delete';
+  status: 'received' | 'verified' | 'owner_approved' | 'executed' | 'confirmed' | 'rejected';
+  requestedBy: string; notes: string | null; executedAt: string | null; createdAt: string;
+}
+export interface PlanCatalogueRecord {
+  id: string; version: number; tiers: unknown; zktecoAddonPricePiasters: number;
+  status: 'draft' | 'published'; createdByUserId: string | null; createdAt: string;
+}
+export interface SubscriptionRecord {
+  id: string; tenantId: string; plan: string; planVersion: number;
+  status: 'trial' | 'active' | 'past_due' | 'suspended' | 'churned';
+  trialEndsAt: string | null; pricePiastersPerMonth: number; addons: string[];
+  coupon: string | null; discountPct: number; dunningStage: string | null; createdAt: string;
+}
+export interface InvoiceRecord {
+  id: string; tenantId: string; period: string; amountPiasters: number;
+  status: 'unpaid' | 'paid' | 'refunded' | 'void';
+  refundPiasters: number; refundProviderRef: string | null; refundNote: string | null;
+  createdAt: string;
+}
+export interface StatutoryRuleRecord {
+  id: string; version: number; values: Record<string, unknown>; effectiveFrom: string;
+  status: 'draft' | 'reviewed' | 'staged' | 'published' | 'withdrawn';
+  reviewerSignoffRef: string | null; releaseNotesAr: string | null; releaseNotesEn: string | null;
+  stagingResult: unknown; publishedAt: string | null; createdByUserId: string | null; createdAt: string;
+}
+export interface TenantNotificationRecord {
+  id: string; tenantId: string; kind: string; titleAr: string; titleEn: string;
+  detail: unknown; read: boolean; createdAt: string;
+}
+export interface SuperadminUserRecord {
+  id: string; email: string; passwordHash: string; role: string; mfaEnabled: boolean; createdAt: string;
+}
+export interface SuperadminAuditRecord {
+  id: string; superadminUserId: string | null; superadminRole: string | null;
+  tenantId: string | null; action: string; entity: string | null; detail: unknown; createdAt: string;
+}
+export interface BreakGlassSessionRecord {
+  id: string; tenantId: string; superadminUserId: string; ticketId: string; reason: string;
+  expiresAt: string; usedAt: string | null; revoked: boolean; createdAt: string;
 }
 
 export function newId(prefix: string): string {

@@ -4,7 +4,7 @@ Standalone codebase for the HR & Payroll SaaS described in the v2 product brief
 (`hr-payroll-product-brief.pdf`, 28 pages). Beachhead: 5–30 staff restaurants,
 cafés and small frontline businesses in Egypt, sold first through Zad.
 
-> **Scope — M1 Foundation + M2 Attendance & Shifts + M3 Payroll MVP + M4 AI agents v1.**
+> **Scope — M1 Foundation + M2 Attendance & Shifts + M3 Payroll MVP + M4 AI agents v1 + V1 (final build milestone).**
 > M1: multi-tenancy, auth, roles, Settings framework (§10), Superadmin Lite (§11), seed demo data,
 > Docker Compose. M2: attendance Modes A (QR + geofence) and B (passcode +
 > photo kiosk), exception queue, roster templates + publish with WhatsApp
@@ -24,8 +24,20 @@ cafés and small frontline businesses in Egypt, sold first through Zad.
 > offline sync hardening (signed-timestamp verification, sync-status
 > endpoint, cached roster viewing), tenant health snapshot + masked
 > ticket-context for support, and Settings Area 10 (AI agents).
-> It does **not** build ZKTeco sync, live WhatsApp sending, a real LLM, or
-> the full Superadmin console — those are V1.
+> V1: ZKTeco sync (**STUBBED** ADMS adapter + fixture), mobile biometrics
+> (on-device yes/no assertion only, public key only — **no templates ever**),
+> PDPL consent + data-subject-request workflows (§12), the **full Superadmin
+> console** (§11: billing ops + ordered dunning, global statutory rule
+> publishing with golden-case staging + rollback, tenant health, AI cost
+> control wiring the M4 ledger, vendor analytics, least-privilege
+> superadmin roles with mandatory MFA), bank-file history + re-export +
+> reconciliation, Zad integration (**STUBBED** — no staging tenant), Pro tier
+> gating (§14), multi-branch Pro reports, and the employee **PWA** (not a
+> native iOS app). Agents 2 and 4 were built in M4 and are wired into the
+> Pro tier + AI cost controls in V1, not rebuilt.
+> It does **not** build V2 (decided from pilot/churn data), a native iOS app,
+> live WhatsApp, a real LLM, a live ZKTeco ADMS connection, or a live Zad
+> connection — those are listed under "V2 / not built" below.
 
 ## Stack
 
@@ -60,7 +72,7 @@ npm run seed --workspace=@hr-payroll/api   # seeds the demo café (see below)
 npm run dev --workspace=@hr-payroll/api
 ```
 
-Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"m4"}`
+Health check: `curl http://localhost:3001/health` → `{"status":"ok","scope":"v1"}`
 
 ## Tests
 
@@ -337,14 +349,142 @@ the NOSI employer rate (see M0 below).
 through the product. The M3 exit criterion (parallel run matching the
 accountant's figures) is likewise still open pending the M0 reviewer.
 
+## V1 — final build milestone (Brief §5 Mode C1/C2, §9, §11, §12, §14, §15 V1)
+
+- **ZKTeco sync — Mode C1** (`apps/api/src/v1.ts`, `StubAdmsAdapter`): device
+  registry per branch (name, model, serial, sync status, last sync, clock
+  drift), enrolment mapping device-user-ID ↔ employee with **conflict
+  handling (409, never silently overwritten)**, duplicate-punch dedup by
+  `device|user|deviceAt`, offline device buffers (unmapped punches stored,
+  never silently assigned), clock-drift flagging (> 5 min → pending review),
+  sync health per device (`ok` / `stale` after 24 h / `failing` / `never_synced`)
+  via `GET /api/zkteco/sync-health` and per-device health. ADMS push receiver
+  (`POST /api/zkteco/adms/push`) + scheduled pull/import fallback
+  (`POST /api/zkteco/devices/:id/pull`) + explicit fixture simulation
+  (`POST /api/zkteco/devices/:id/simulate`). **The adapter is STUBBED** — it
+  simulates punches from a fixture; no real device, no real ADMS server, no
+  ADMS credentials. Every punch is labelled `stub-adms` end to end. Mapped
+  punches become `zkteco_device` attendance records and feed M3 payroll.
+  Pro feature or Growth add-on (EGP 249/month, §14 range EGP 199–299).
+- **Mobile biometrics — Mode C2** (preferred route): on-device yes/no
+  assertion only. The employee's phone signs
+  `tenant|employee|device|time|nonce` with its Ed25519 private key; the
+  server verifies against the enrolled device **public key**. **No
+  fingerprint/face template and no private key is ever stored, received or
+  transmitted centrally** — requests carrying template-like fields are
+  rejected and the V1 tests scan the store for them. Enrolment binds a
+  device to an employee with explicit consent; assertions expire after
+  5 minutes and nonces are single-use (replay rejected).
+- **PDPL consent (§12, Law 151/2020)** — see `docs/pdpl-biometrics-note.md`:
+  consent records per employee per purpose (biometric_mobile,
+  biometric_device, kiosk_photo, face_comparison) with text, date, method
+  and version; consent is **required before any biometric enrolment or
+  kiosk-photo use**; withdrawal blocks further biometric clock-ins and
+  revokes bound devices while retaining the audit trail; 90-day photo
+  retention with a purge-job endpoint (`POST /api/consent/purge-photos`);
+  data-subject requests (access/export/delete) as a tracked workflow
+  (`received → verified → owner_approved → executed → confirmed`), never an
+  ad-hoc edit — deletion is **blocked** when the employee has payslips in a
+  locked run. **The note states plainly: biometric processing needs explicit
+  written consent + a separate regulator licence; this code is NOT legal
+  advice and the licence route is a non-code blocker.**
+- **Full Superadmin console (§11)**: versioned plans catalogue, per-tenant
+  subscriptions (plan, trial, add-ons, coupons/discounts), invoices,
+  **refunds recorded manually only** (Finance, via the payment provider —
+  the console never moves tenant payroll money), **ordered dunning**
+  (reminders → grace → downgrade → suspension, tenant notified at each
+  step), MRR/ARR + revenue by plan + trial conversion, tenant lifecycle
+  with suspension grace notice, tenant detail + masked support console
+  (consent status shown, no salaries/photos/payslips), **global statutory
+  rule publishing** (draft → reviewer check → staging against the Appendix A
+  golden case — net must still be EGP 8,307.48 → scheduled publish with
+  tenant notification + diff → rollback with incident log and a list of
+  affected runs, corrected by adjustment never by editing; never silently
+  mid-period, never to a locked run; a draft may not invent a NOSI employer
+  rate), **AI cost control wiring the M4 ledger** (per-tenant/per-agent cost
+  vs allowance, kill switches per agent/per tenant/global — Agents 2 and 4
+  are Pro-tier features), vendor analytics (activation funnel,
+  payroll runs/month, attendance volume, churn signals, feature adoption by
+  plan — aggregates only; time-to-first-roster reports null because the dev
+  store does not track signup dates), superadmin roles
+  (operations/support/finance/auditor, least privilege enforced per route,
+  MFA mandatory), cross-tenant audit log, and full break-glass
+  impersonation (time-boxed, ticket-justified, tenant-visible audit).
+- **Bank files**: M3 CIB/QNB/NBE/Banque Misr generation verified still
+  working; V1 adds history (`GET /api/payroll/runs/:id/bank-files`),
+  re-export of locked runs only (logged), and a reconciliation check
+  (file total = run net total = payslip sum).
+- **Zad integration (V1, design + stub)**: shared business identity endpoint
+  (`GET /api/zad/identity`), labour-cost-against-sales stub
+  (`GET /api/zad/labour-cost-vs-sales`, clearly-marked demo sales figures),
+  `POST /api/zad/connect` refused with `ZAD_STAGING_TENANT_REQUIRED`.
+  **STUBBED / NOT LIVE — no Zad staging tenant exists** (same blocker as
+  the Zad Growth Engine). API design is documented in the endpoint notes.
+- **Multi-branch Pro features**: per-branch plan/staff-cap checks
+  (branch caps by plan, staff cap vs plan), branch-scoped manager
+  permissions, cross-branch labour-cost-per-branch report (Pro-gated),
+  and plan gating everywhere with a clear 403 + upgrade hint
+  (`PLAN_FEATURE_GATED`, tested).
+- **Employee PWA**: installable shell (`apps/web/public/manifest.webmanifest`,
+  `sw.js` registered on load, offline roster caching, clock-in queued
+  offline via the M2 offline endpoint). **A PWA, NOT a native iOS app** —
+  native iOS needs an Apple Developer account + Xcode build, a non-code
+  blocker stated in the README and the app itself.
+- **Web** (`apps/web/src/main.tsx`): Superadmin console page (tenants,
+  revenue, health, AI cost, analytics, statutory rules, audit — via an
+  MFA-verified superadmin JWT, since superadmin sign-in is separate from
+  client accounts), ZKTeco devices page (register, sync health, simulate,
+  mapping), consent management page, employee PWA entry. Arabic RTL
+  default, English toggle works.
+
+### V1 API endpoints (all tenant-scoped JWT unless superadmin)
+`GET /api/plans`, `GET /api/plan-check?feature=…`, `POST /api/branches`,
+`GET /api/branches/:id/staff-cap`, `GET /api/reports/labour-cost-by-branch`,
+`POST|GET /api/zkteco/devices`, `GET /api/zkteco/devices/:id/health`,
+`GET /api/zkteco/sync-health`, `POST|GET|DELETE /api/zkteco/devices/:id/mapping(s)`,
+`POST /api/zkteco/adms/push`, `POST /api/zkteco/devices/:id/pull|simulate`,
+`GET /api/zkteco/punches`, `POST|GET /api/consent`, `GET /api/consent/:employeeId`,
+`POST /api/consent/:id/withdraw`, `POST /api/consent/purge-photos`,
+`POST|GET /api/biometrics/devices`, `POST /api/biometrics/devices/:id/revoke`,
+`POST /api/biometrics/clock-in`, `POST|GET /api/dsr/requests`,
+`POST /api/dsr/requests/:id/transition`,
+`GET /api/payroll/runs/:id/bank-files`, `POST /api/payroll/runs/:id/bank-file/:bank/re-export`,
+`GET /api/payroll/runs/:id/bank-file/:bank/reconcile`,
+`GET /api/zad/status|identity|labour-cost-vs-sales`, `POST /api/zad/connect`,
+`GET /api/notifications`, `GET /api/settings/statutory/available`, `GET /api/pwa/roster`,
+`GET /api/superadmin/tenants/:id/detail|support`, `POST /api/superadmin/tenants/:id/lifecycle`,
+`GET|POST /api/superadmin/plans`, `POST /api/superadmin/tenants/:id/subscription`,
+`GET|POST /api/superadmin/invoices`, `POST /api/superadmin/invoices/:id/refund`,
+`POST|GET /api/superadmin/dunning/:tenantId[/step]`, `GET /api/superadmin/revenue`,
+`GET /api/superadmin/health`, `GET /api/superadmin/ai-cost[/:tenantId]`,
+`POST /api/superadmin/ai-cost/kill-switch`, `GET|POST /api/superadmin/statutory-rules`,
+`POST /api/superadmin/statutory-rules/:id/transition`, `GET /api/superadmin/analytics`,
+`GET /api/superadmin/audit`, `GET|POST /api/superadmin/users`,
+`POST /api/superadmin/break-glass/request`, `POST /api/superadmin/break-glass/:id/activate`,
+`GET /api/superadmin/break-glass`.
+
+### V1 exit criterion (Brief §15)
+> Pro tier sellable; 20+ paying businesses.
+
+**Not yet met — needs real pilots and paying customers.** The code for it is
+complete and tested (see below), but no live branch has run ZKTeco sync or
+mobile biometrics, no statutory version has been published to a real tenant,
+and no paying Pro subscription exists yet. The M0 NOSI blocker is unchanged.
+
 ## What V1 builds next
 
-ZKTeco sync add-on, mobile biometrics, iOS app, Zad integration, full
-Superadmin console (billing ops and dunning, tenant health, support console,
-AI cost and kill switches, vendor analytics — §11), a real LLM provider with
-per-token cost accounting (replacing the M4 stub estimates), and live
-WhatsApp via 360dialog/Gupshup. V1 must not start before the M4 exit
-criterion: a first live payroll paid through the product.
+V1 is the final build milestone. What is **not** built (V2 is decided from
+pilot/churn data — Brief §15, not in advance):
+
+- Policy and hiring helpers; advanced analytics beyond the V1 vendor aggregates.
+- Disbursement partnerships (actual money movement — bank files stay generated files only).
+- Expansion segments beyond the 5–30 staff beachhead.
+- Native iOS app (non-code blocker: Apple Developer account + Xcode build; V1 ships the employee PWA).
+- Live WhatsApp via 360dialog/Gupshup (needs a real provider account + approved templates).
+- Real LLM provider with per-token cost accounting (needs `LLM_API_KEY`; M4 stub estimates remain).
+- Live ZKTeco ADMS server connection (needs real devices + ADMS credentials; V1 ships a STUBBED adapter + fixture).
+- Live Zad connection (needs a Zad staging tenant).
+- PDPL biometric regulator licence (non-code legal blocker — see `docs/pdpl-biometrics-note.md`).
 
 ## M0 — payroll reviewer (BLOCKER, not code)
 

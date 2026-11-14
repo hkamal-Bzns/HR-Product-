@@ -168,11 +168,19 @@ test('M4 Agent 4 + linking: employee sees ONLY their own data; unanswered routes
   assert.equal(me.body.linked, true);
   assert.equal(me.body.employee.id, 'emp-demo-1');
   // Next shift — from the employee's own published roster only.
+  // Date-proof setup: publish a roster for emp-demo-1 on the next Monday,
+  // so a future shift exists whenever the test runs (the seeded roster ends
+  // Fri 2026-11-13 and ages out).
+  const nextMonday = (() => { const d = new Date(); d.setUTCDate(d.getUTCDate() + ((8 - d.getUTCDay()) % 7 || 7)); return d.toISOString().slice(0, 10); })();
+  const draft = await j('POST', '/api/rosters', mgr(), { branchId: 'branch-zamalek', weekStart: nextMonday, assignments: [{ employeeId: 'emp-demo-1', date: nextMonday, shiftTemplateId: 'tpl-morning' }] });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const pub = await j('POST', `/api/rosters/${draft.body.roster.id}/publish`, mgr(), {});
+  assert.equal(pub.status, 200, JSON.stringify(pub.body));
   const shift = await j('POST', '/api/agents/qa/ask', empToken, { question: 'ما هي ورديتي القادمة؟' });
   assert.equal(shift.status, 200, JSON.stringify(shift.body));
   assert.equal(shift.body.intent, 'next_shift');
   assert.equal(shift.body.routed, false);
-  assert.match(shift.body.answerAr, /2026-11-1[123]/);
+  assert.match(shift.body.answerAr, new RegExp(nextMonday));
   // Leave balance — the employee's own balance (annual 21, taken 2 → 19 left).
   const leave = await j('POST', '/api/agents/qa/ask', empToken, { question: 'كم رصيد إجازتي السنوية؟' });
   assert.equal(leave.body.intent, 'leave_balance');

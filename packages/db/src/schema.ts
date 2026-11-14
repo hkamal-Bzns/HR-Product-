@@ -501,3 +501,166 @@ export const offlineSyncLog = pgTable('offline_sync_log', {
   signatureStatus: text('signature_status').notNull().default('legacy'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+// ============================================================================
+// V1 — ZKTeco sync (Mode C1), mobile biometrics (Mode C2), PDPL consent (§12),
+// full Superadmin console (§11), Zad stub (§9). Biometric records store a
+// device PUBLIC KEY ONLY — never a fingerprint/face template, never a
+// private key. See docs/pdpl-biometrics-note.md.
+// ============================================================================
+export const zktecoDevices = pgTable('zkteco_devices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  branchId: uuid('branch_id').references(() => branches.id),
+  name: text('name').notNull(),
+  model: text('model').notNull(),
+  serial: text('serial').notNull(),
+  adapter: text('adapter').notNull().default('stub-adms'), // STUBBED — no live ADMS server
+  syncStatus: text('sync_status').notNull().default('never_synced'), // ok | stale | failing | never_synced
+  lastSyncAt: timestamp('last_sync_at'),
+  lastError: text('last_error'),
+  lastClockDriftSeconds: integer('last_clock_drift_seconds'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const zktecoMappings = pgTable('zkteco_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  deviceId: uuid('device_id').notNull().references(() => zktecoDevices.id),
+  deviceUserId: text('device_user_id').notNull(), // user ID on the device
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  createdByUserId: uuid('created_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const zktecoPunches = pgTable('zkteco_punches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  deviceId: uuid('device_id').notNull().references(() => zktecoDevices.id),
+  deviceUserId: text('device_user_id').notNull(),
+  employeeId: uuid('employee_id').references(() => employees.id),
+  deviceAt: timestamp('device_at').notNull(),
+  direction: text('direction').notNull().default('in'), // in | out
+  dedupKey: text('dedup_key').notNull().unique(),
+  clockDriftSeconds: integer('clock_drift_seconds'),
+  source: text('source').notNull().default('stub-adms'), // STUBBED adapter
+  attendanceRecordId: uuid('attendance_record_id').references(() => attendanceRecords.id),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const biometricDevices = pgTable('biometric_devices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  deviceName: text('device_name').notNull(),
+  platform: text('platform').notNull(), // android | ios
+  // Public key only (Ed25519, PEM). The private key + biometric template
+  // stay on the device, held by the OS. NEVER store a template here.
+  publicKeyPem: text('public_key_pem').notNull(),
+  consentId: uuid('consent_id'),
+  revoked: boolean('revoked').notNull().default(false),
+  revokedAt: timestamp('revoked_at'),
+  lastUsedAt: timestamp('last_used_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const consentRecords = pgTable('consent_records', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  purpose: text('purpose').notNull(), // biometric_mobile | biometric_device | kiosk_photo | face_comparison
+  consented: boolean('consented').notNull().default(false),
+  status: text('status').notNull().default('active'), // active | withdrawn | expired
+  consentText: text('consent_text').notNull(),
+  method: text('method').notNull(), // written_signed | in_app_signed | whatsapp_confirmed
+  version: text('version').notNull(), // e.g. v1-2026-11
+  consentedAt: timestamp('consented_at'),
+  withdrawnAt: timestamp('withdrawn_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const dataSubjectRequests = pgTable('data_subject_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  employeeId: uuid('employee_id').references(() => employees.id),
+  kind: text('kind').notNull(), // access | export | delete
+  status: text('status').notNull().default('received'), // received | verified | owner_approved | executed | confirmed | rejected
+  requestedBy: text('requested_by').notNull(),
+  notes: text('notes'),
+  executedAt: timestamp('executed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const planCatalogueVersions = pgTable('plan_catalogue_versions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  version: integer('version').notNull(),
+  tiers: jsonb('tiers').notNull().default([]),
+  zktecoAddonPricePiasters: integer('zkteco_addon_price_piasters').notNull().default(24900),
+  status: text('status').notNull().default('draft'), // draft | published
+  createdByUserId: uuid('created_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const subscriptions = pgTable('subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  plan: planEnum('plan').notNull(),
+  planVersion: integer('plan_version').notNull().default(1),
+  status: text('status').notNull().default('trial'), // trial | active | past_due | suspended | churned
+  trialEndsAt: timestamp('trial_ends_at'),
+  pricePiastersPerMonth: integer('price_piasters_per_month').notNull().default(0),
+  addons: jsonb('addons').notNull().default([]), // e.g. ['zkteco_addon']
+  coupon: text('coupon'),
+  discountPct: integer('discount_pct').notNull().default(0),
+  dunningStage: text('dunning_stage'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  period: text('period').notNull(), // YYYY-MM
+  amountPiasters: integer('amount_piasters').notNull(),
+  status: text('status').notNull().default('unpaid'), // unpaid | paid | refunded | void
+  refundPiasters: integer('refund_piasters').notNull().default(0),
+  refundProviderRef: text('refund_provider_ref'),
+  refundNote: text('refund_note'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const statutoryRuleVersions = pgTable('statutory_rule_versions_v1', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  version: integer('version').notNull(),
+  values: jsonb('values').notNull().default({}),
+  effectiveFrom: text('effective_from').notNull(),
+  status: text('status').notNull().default('draft'), // draft | reviewed | staged | published | withdrawn
+  reviewerSignoffRef: text('reviewer_signoff_ref'),
+  releaseNotesAr: text('release_notes_ar'),
+  releaseNotesEn: text('release_notes_en'),
+  stagingResult: jsonb('staging_result'),
+  publishedAt: timestamp('published_at'),
+  createdByUserId: uuid('created_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const tenantNotifications = pgTable('tenant_notifications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  kind: text('kind').notNull(), // statutory_version_available | dunning | suspension_notice | rule_rollback
+  titleAr: text('title_ar').notNull(),
+  titleEn: text('title_en').notNull(),
+  detail: jsonb('detail').notNull().default({}),
+  read: boolean('read').notNull().default(false),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const superadminAudit = pgTable('superadmin_audit', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  superadminUserId: uuid('superadmin_user_id'),
+  superadminRole: text('superadmin_role'),
+  tenantId: uuid('tenant_id').references(() => tenants.id),
+  action: text('action').notNull(),
+  entity: text('entity'),
+  detail: jsonb('detail'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});

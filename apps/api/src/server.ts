@@ -10,6 +10,7 @@ import { changeSettings } from './settings.js';
 import { registerM2 } from './m2.js';
 import { registerM3 } from './payroll.js';
 import { registerM4 } from './agents.js';
+import { registerV1 } from './v1.js';
 
 export const store = new MemoryStore();
 
@@ -24,11 +25,12 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
     return verifySession(token.slice(7), opts.jwtSecret);
   };
 
-  app.get('/health', async () => ({ status: 'ok', scope: 'm4', tenantCount: store.tenants.size }));
+  app.get('/health', async () => ({ status: 'ok', scope: 'v1', tenantCount: store.tenants.size }));
 
   registerM2(app, store, opts.jwtSecret);
   registerM3(app, store, opts.jwtSecret);
   registerM4(app, store, opts.jwtSecret);
+  registerV1(app, store, opts.jwtSecret);
 
   app.post('/auth/login', async (req, reply) => {
     const body = req.body as { tenantSlug?: string; email?: string; password?: string };

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
-type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin' | 'agents';
+type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin' | 'agents' | 'devices' | 'consent' | 'pwa';
 
 function App() {
   const [lang, setLang] = useState<'ar' | 'en'>('ar');
@@ -59,15 +59,52 @@ function App() {
   const [agentCost, setAgentCost] = useState<{ month: string; perAgent: { agentId: string; monthCostPiasters: number; capPiasters: number; paused: boolean }[]; totalPiasters: number } | null>(null);
   const [syncStatus, setSyncStatus] = useState<{ accepted: number; conflicted: number; pending: number; total: number } | null>(null);
   const [offlineRosterNote, setOfflineRosterNote] = useState('');
+  // --- V1 ----------------------------------------------------------------------
+  const [devices, setDevices] = useState<{ id: string; name: string; model: string; serial: string; branchId: string | null; health: string; lastSyncAt: string | null }[]>([]);
+  const [devName, setDevName] = useState('LX15 — entrance');
+  const [devModel, setDevModel] = useState('LX15');
+  const [devSerial, setDevSerial] = useState('ZK-DEMO-0002');
+  const [devUserId, setDevUserId] = useState('101');
+  const [consents, setConsents] = useState<{ id: string; employeeId: string; purpose: string; consented: boolean; status: string; method: string; version: string }[]>([]);
+  const [consentPurpose, setConsentPurpose] = useState('biometric_mobile');
+  const [consentText, setConsentText] = useState('أوافق كتابياً على استخدام بصمة/وجه هاتفي لتأكيد الحضور (نعم/لا فقط، دون تخزين بصمة مركزياً).');
+  const [saToken, setSaToken] = useState('');
+  const [pwaRoster, setPwaRoster] = useState<{ date: string; shiftTemplateId: string | null; onLeave: boolean }[] | null>(null);
+  const [pwaNote, setPwaNote] = useState('');
+  const loadDevices = async () => { const { json } = await api('/api/zkteco/devices'); setDevices(json.devices ?? []); };
+  const loadConsents = async () => { const { json } = await api(`/api/consent?employeeId=${employeeId}`); setConsents(json.consents ?? []); };
+  const saApi = async (path: string, method = 'GET', body?: unknown) => {
+    const res = await fetch(`${API}${path}`, { method, headers: { authorization: `Bearer ${saToken}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const json = await res.json().catch(() => ({}));
+    setOut(JSON.stringify({ status: res.status, ...json }, null, 2));
+    return { res, json };
+  };
+  const loadPwaRoster = async () => {
+    const { json } = await api('/api/pwa/roster');
+    setPwaRoster(json.assignments ?? null);
+    try { if (json.assignments) localStorage.setItem('hrp:pwaRoster', JSON.stringify({ cachedAt: new Date().toISOString(), assignments: json.assignments })); } catch { /* storage unavailable */ }
+    setPwaNote(json.linked ? '' : (lang === 'ar' ? 'حسابك غير مرتبط بسجل موظف بعد — يربطه المالك من لوحة التحكم.' : 'Your login is not linked to an employee record yet — the owner links it.'));
+  };
 
   useEffect(() => { document.documentElement.lang = lang; document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr'; }, [lang]);
+  // V1 PWA: register the service worker for offline roster viewing.
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => { /* SW unavailable in this context */ });
+    }
+    // Offline fallback: show the cached PWA roster when the API is unreachable.
+    try {
+      const cached = JSON.parse(localStorage.getItem('hrp:pwaRoster') ?? 'null') as { assignments: { date: string; shiftTemplateId: string | null; onLeave: boolean }[] } | null;
+      if (cached) setPwaRoster(cached.assignments);
+    } catch { /* ignore */ }
+  }, []);
   useEffect(() => {
     fetch(`${API}/health`).then((r) => r.json()).then((j) => setHealth(`${j.status} — ${j.scope}`)).catch(() => setHealth('API offline (start apps/api)'));
   }, []);
 
   const t = lang === 'ar'
-    ? { title: 'الموارد البشرية والرواتب', sub: 'M4 — وكلاء الذكاء الاصطناعي v1: الإحاطة اليومية، منشئ الجداول (مسودة فقط)، فاحص شذوذ الرواتب، وأسئلة الموظفين. النموذج تجريبي (STUBBED) — المخرجات تُركَّب من بيانات المنتج فقط. واتساب تجريبي.', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', payroll: 'الرواتب', settings: 'الإعدادات', super: 'المشرف العام', agents: 'وكلاء الذكاء الاصطناعي', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً. ملفات البنوك مولَّدة فقط وليست صرفاً فعلياً. وكيل الذكاء الاصطناعي تجريبي: لا مفتاح نموذج حقيقي ولا مكالمات خارجية.' }
-    : { title: 'HR & Payroll', sub: 'M4 — AI agents v1: daily briefing, schedule builder (draft only), payroll anomaly checker, employee Q&A. LLM is STUBBED — outputs are composed from product data only. WhatsApp stubbed.', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', payroll: 'Payroll', settings: 'Settings', super: 'Superadmin', agents: 'AI Agents', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent. Bank files are generated files, not disbursements. AI agents are STUBBED: no real model key, no external calls.' };
+    ? { title: 'الموارد البشرية والرواتب', sub: 'V1 — مزامنة ZKTeco (تجريبي)، بصمة الهاتف (تأكيد نعم/لا فقط)، موافقات PDPL، وحدة تحكم المشرف العام الكاملة، تكامل Zad (تجريبي)، باقة Pro، وتطبيق موظف PWA. النموذج تجريبي (STUBBED) — المخرجات تُركَّب من بيانات المنتج فقط. واتساب تجريبي.', dash: 'لوحة التحكم', att: 'الحضور', roster: 'الورديات', exc: 'الاستثناءات', leave: 'الإجازات', payroll: 'الرواتب', settings: 'الإعدادات', super: 'المشرف العام', agents: 'وكلاء الذكاء الاصطناعي', login: 'تسجيل الدخول', demo: 'بيانات تجريبية: مقهى القاهرة — فرعان، 10 موظفين. لا رواتب حقيقية.', stub: 'واتساب تجريبي (STUBBED): الرسائل تُسجَّل في صندوق الصادر فقط ولا تُرسَل فعلياً. ملفات البنوك مولَّدة فقط وليست صرفاً فعلياً. وكيل الذكاء الاصطناعي تجريبي: لا مفتاح نموذج حقيقي ولا مكالمات خارجية. مزامنة ZKTeco تجريبية، واتصال Zad تجريبي.' }
+    : { title: 'HR & Payroll', sub: 'V1 — ZKTeco sync (STUBBED), mobile biometrics (yes/no assertion only), PDPL consent, full Superadmin console, Zad integration (STUBBED), Pro tier, employee PWA. LLM is STUBBED — outputs are composed from product data only. WhatsApp stubbed.', dash: 'Dashboard', att: 'Attendance', roster: 'Roster', exc: 'Exceptions', leave: 'Leave', payroll: 'Payroll', settings: 'Settings', super: 'Superadmin', agents: 'AI Agents', login: 'Login', demo: 'Demo data: Cairo Café — 2 branches, 10 employees. No real salaries.', stub: 'WhatsApp is STUBBED: messages are queued in the outbox only, never actually sent. Bank files are generated files, not disbursements. AI agents are STUBBED: no real model key, no external calls. ZKTeco sync is STUBBED and the Zad connection is STUBBED.' };
 
   const authHeaders: Record<string, string> = token ? { authorization: `Bearer ${token}`, 'content-type': 'application/json' } : { 'content-type': 'application/json' };
   const api = async (path: string, method = 'GET', body?: unknown) => {
@@ -217,8 +254,8 @@ function App() {
         {token && <p>✓ {lang === 'ar' ? 'مسجَّل — تم تحميل الفروع والموظفين والقوالب' : 'Logged in — branches, employees and templates loaded'}</p>}
       </section>
       <nav style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['payroll', t.payroll], ['agents', t.agents], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
-          <button key={p} onClick={() => { setPage(p); if (p === 'agents') { void loadBriefing(); void loadDrafts(); void loadAgentCost(); void loadSyncStatus(); } }} disabled={p === page}>{label}</button>
+        {([['dashboard', t.dash], ['attendance', t.att], ['roster', t.roster], ['exceptions', t.exc], ['leave', t.leave], ['payroll', t.payroll], ['agents', t.agents], ['devices', lang === 'ar' ? 'أجهزة ZKTeco' : 'ZKTeco devices'], ['consent', lang === 'ar' ? 'الموافقات' : 'Consent'], ['pwa', lang === 'ar' ? 'تطبيق الموظف (PWA)' : 'Employee app (PWA)'], ['settings', t.settings], ['superadmin', t.super]] as [Page, string][]).map(([p, label]) => (
+          <button key={p} onClick={() => { setPage(p); if (p === 'agents') { void loadBriefing(); void loadDrafts(); void loadAgentCost(); void loadSyncStatus(); } if (p === 'devices') { void loadDevices(); } if (p === 'consent') { void loadConsents(); } if (p === 'pwa') { void loadPwaRoster(); } }} disabled={p === page}>{label}</button>
         ))}
       </nav>
       {offlineRosterNote && <p style={{ background: '#fff3cd', padding: 8 }}>⚠ {offlineRosterNote}</p>}
@@ -382,7 +419,58 @@ function App() {
         <p>{lang === 'ar' ? 'التغييرات الخطرة (توسيع النطاق فوق 300م، إيقاف الصورة، رفع سقف العمل الإضافي) تتطلب تأكيداً + سبباً. التغيير المؤثر على جدول منشور يظهر معاينة الأثر أولاً.' : 'Dangerous changes (geofence beyond 300m, photo off, overtime cap up) need confirmation + reason. Changes affecting a published roster show an impact preview first.'}</p>
       </section>}
 
-      {page === 'superadmin' && <section><h2>{t.super}</h2><p>Superadmin Lite (§11): tenant list, plan change, feature flags. MFA mandatory. No salaries, photos or payslips by default — break-glass only, disabled by default, audit-logged.</p></section>}
+      {page === 'superadmin' && <section><h2>{t.super} — §11 full console (V1)</h2>
+        <p>{lang === 'ar' ? 'وحدة تحكم المورّد الكاملة: المستأجرون، الاشتراكات والفواتير والتحصيل (تذكير ← مهلة ← تخفيض ← إيقاف)، القواعد القانونية العالمية (مسودة ← مراجعة ← اختبار ذهبي ← نشر مجدول ← سحب)، صحة المستأجرين، تكلفة الذكاء الاصطناعي ومفاتيح الإيقاف، التحليلات، وسجل التدقيق عبر المستأجرين. أدوار: عمليات / دعم / مالية / مدقق — أقل صلاحية، والمصادقة الثنائية إلزامية.' : 'Full vendor console: tenants, subscriptions/invoices/dunning (reminder → grace → downgrade → suspension), global statutory rules (draft → review → golden-case staging → scheduled publish → rollback), tenant health, AI cost + kill switches, analytics, cross-tenant audit. Roles: operations / support / finance / auditor — least privilege, MFA mandatory.'}</p>
+        <p>{lang === 'ar' ? 'تسجيل دخول المشرف العام منفصل عن حسابات العملاء — الصق رمز JWT موثّقاً بالمصادقة الثنائية (MFA) لاستخدام وحدة التحكم:' : 'Superadmin sign-in is separate from client accounts — paste an MFA-verified superadmin JWT to use the console:'}</p>
+        <input value={saToken} onChange={(e) => setSaToken(e.target.value)} placeholder="superadmin JWT (MFA-verified)" size={60} />{' '}
+        <button onClick={() => void saApi('/api/superadmin/tenants')}>{lang === 'ar' ? 'عرض المستأجرين' : 'List tenants'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/revenue')}>{lang === 'ar' ? 'الإيرادات (MRR/ARR)' : 'Revenue (MRR/ARR)'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/health')}>{lang === 'ar' ? 'صحة المستأجرين' : 'Tenant health'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/ai-cost')}>{lang === 'ar' ? 'تكلفة الذكاء الاصطناعي' : 'AI cost'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/analytics')}>{lang === 'ar' ? 'التحليلات' : 'Analytics'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/statutory-rules')}>{lang === 'ar' ? 'القواعد القانونية' : 'Statutory rules'}</button>{' '}
+        <button onClick={() => void saApi('/api/superadmin/audit')}>{lang === 'ar' ? 'سجل التدقيق' : 'Audit log'}</button>
+        <p>{lang === 'ar' ? 'لا رواتب ولا صور ولا كشوف رواتب افتراضياً — الدخول فقط عبر break-glass المقيّد زمنياً والمبرَّر بتذكرة والمسجَّل والظاهر للمستأجر.' : 'No salaries, photos or payslips by default — entry only via time-boxed, ticket-justified, audit-logged break-glass, visible to the tenant.'}</p>
+      </section>}
+
+      {page === 'devices' && <section><h2>{lang === 'ar' ? 'أجهزة ZKTeco — مزامنة (إضافة Pro)' : 'ZKTeco devices — sync (Pro add-on)'}</h2>
+        <p>{lang === 'ar' ? 'المحول تجريبي (STUBBED): يحاكي نبضات الجهاز من بيانات جاهزة. لا جهاز حقيقي ولا خادم ADMS حقيقي هنا — المزامنة الحية تحتاج أجهزة حقيقية وبيانات اعتماد ADMS. نبضة مكررة تُحذف، ونبضة بلا ربط تُحفظ دون إسناد صامت، وانحراف ساعة الجهاز فوق 5 دقائق يُعلَّم للمراجعة.' : 'STUBBED adapter: simulates device punches from a fixture. No real device, no live ADMS server here — live sync needs real devices + ADMS credentials. Duplicate punches are dropped, unmapped punches are stored never silently assigned, and device clock drift over 5 minutes is flagged for review.'}</p>
+        <button onClick={loadDevices} disabled={!token}>{lang === 'ar' ? 'تحديث القائمة' : 'Refresh'}</button>
+        <ul>{devices.map((d) => <li key={d.id}>{d.name} — {d.model} — {d.serial} — <b>{d.health}</b> {d.lastSyncAt ? `(${d.lastSyncAt.slice(0, 10)})` : ''}{' '}
+          <button onClick={async () => { await api(`/api/zkteco/devices/${d.id}/simulate`, 'POST', { date: '2026-11-11' }); await loadDevices(); }} disabled={!token}>{lang === 'ar' ? 'محاكاة مزامنة' : 'Simulate sync'}</button>{' '}
+          <button onClick={async () => { await api(`/api/zkteco/devices/${d.id}/health`); }} disabled={!token}>{lang === 'ar' ? 'الصحة' : 'Health'}</button>
+        </li>)}</ul>
+        <h3>{lang === 'ar' ? 'تسجيل جهاز' : 'Register device'}</h3>
+        <label>{lang === 'ar' ? 'الاسم' : 'Name'} <input value={devName} onChange={(e) => setDevName(e.target.value)} /></label>{' '}
+        <label>{lang === 'ar' ? 'الموديل' : 'Model'} <select value={devModel} onChange={(e) => setDevModel(e.target.value)}><option>LX15</option><option>K20</option><option>MB10-VL</option><option>K50 Pro</option><option>Face + fingerprint</option></select></label>{' '}
+        <label>{lang === 'ar' ? 'الرقم التسلسلي' : 'Serial'} <input value={devSerial} onChange={(e) => setDevSerial(e.target.value)} /></label>{' '}
+        <button onClick={async () => { await api('/api/zkteco/devices', 'POST', { branchId, name: devName, model: devModel, serial: devSerial }); await loadDevices(); }} disabled={!token}>{lang === 'ar' ? 'تسجيل' : 'Register'}</button>
+        <h3>{lang === 'ar' ? 'ربط معرّف الجهاز بموظف' : 'Map device user ID to employee'}</h3>
+        <p>{lang === 'ar' ? 'تعارض الربط يُرفض ولا يُكتب فوقه بصمت — احذف الربط القديم أولاً.' : 'Mapping conflicts are refused, never silently overwritten — delete the old mapping first.'}</p>
+        <label>{lang === 'ar' ? 'معرّف الجهاز' : 'Device user ID'} <input value={devUserId} onChange={(e) => setDevUserId(e.target.value)} size={6} /></label>{' '}
+        <label>{lang === 'ar' ? 'الموظف' : 'Employee'} <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>{employees.map((e) => <option key={e.id} value={e.id}>{e.fullNameAr}</option>)}</select></label>{' '}
+        <button onClick={async () => { const ds = devices[0]; if (ds) await api(`/api/zkteco/devices/${ds.id}/mapping`, 'POST', { deviceUserId: devUserId, employeeId }); }} disabled={!token || devices.length === 0}>{lang === 'ar' ? 'ربط على أول جهاز' : 'Map on first device'}</button>
+      </section>}
+
+      {page === 'consent' && <section><h2>{lang === 'ar' ? 'الموافقات — قانون حماية البيانات 151/2020' : 'Consent — PDPL Law 151/2020'}</h2>
+        <p>{lang === 'ar' ? 'الموافقة الكتابية الصريحة مطلوبة قبل أي تسجيل بصمة أو استخدام لصورة الكشك. السحب يوقف تسجيل الحضور بالبصمة ويُبقي سجل التدقيق. صور الكشك تُحفظ 90 يوماً ثم تُحذف تلقائياً. المعالجة المركزية للبصمة تحتاج ترخيصاً منفصلاً من الجهة المنظمة — هذا الكود ليس استشارة قانونية.' : 'Explicit written consent is required before any biometric enrolment or kiosk-photo use. Withdrawal blocks biometric clock-in and keeps the audit trail. Kiosk photos are kept 90 days, then purged automatically. Central biometric processing needs a separate regulator licence — this code is not legal advice.'}</p>
+        <label>{lang === 'ar' ? 'الموظف' : 'Employee'} <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>{employees.map((e) => <option key={e.id} value={e.id}>{e.fullNameAr}</option>)}</select></label>{' '}
+        <label>{lang === 'ar' ? 'الغرض' : 'Purpose'} <select value={consentPurpose} onChange={(e) => setConsentPurpose(e.target.value)}><option value="biometric_mobile">biometric_mobile</option><option value="biometric_device">biometric_device</option><option value="kiosk_photo">kiosk_photo</option><option value="face_comparison">face_comparison</option></select></label>{' '}
+        <button onClick={async () => { await api('/api/consent', 'POST', { employeeId, purpose: consentPurpose, consentText, method: 'in_app_signed' }); await loadConsents(); }} disabled={!token}>{lang === 'ar' ? 'تسجيل موافقة' : 'Record consent'}</button>{' '}
+        <button onClick={async () => { await api('/api/consent/purge-photos', 'POST', {}); }} disabled={!token}>{lang === 'ar' ? 'تشغيل حذف الصور المنتهية (90 يوماً)' : 'Run expired-photo purge (90 days)'}</button>
+        <ul>{consents.map((c) => <li key={c.id}>{c.employeeId} — {c.purpose} — <b>{c.status}</b> — {c.method} — {c.version}{' '}
+          {c.status === 'active' && <button onClick={async () => { await api(`/api/consent/${c.id}/withdraw`, 'POST', {}); await loadConsents(); }} disabled={!token}>{lang === 'ar' ? 'سحب' : 'Withdraw'}</button>}
+        </li>)}</ul>
+      </section>}
+
+      {page === 'pwa' && <section><h2>{lang === 'ar' ? 'تطبيق الموظف (PWA)' : 'Employee app (PWA)'}</h2>
+        <p>{lang === 'ar' ? 'واجهة موظف قابلة للتثبيت: تعرض جدولك دون اتصال (يُحفظ محلياً) وتسجيل الحضور يُصفّ دون اتصال ويُزامَن عند عودة الاتصال عبر قائمة الانتظار الموقّعة. حساب الرواتب على الخادم فقط. هذا PWA وليس تطبيق iOS أصلياً — التطبيق الأصلي يحتاج حساب Apple Developer وبناء Xcode (عائق غير برمجي).' : 'Installable employee surface: your roster works offline (cached locally) and clock-in queues offline, syncing via the signed offline queue when back online. Payroll is server-side only. This is a PWA, not a native iOS app — a native iOS build needs an Apple Developer account + Xcode build (a non-code blocker).'}</p>
+        <button onClick={loadPwaRoster} disabled={!token}>{lang === 'ar' ? 'تحميل جدولي' : 'Load my roster'}</button>{' '}
+        <button onClick={() => { try { localStorage.setItem('hrp:pwaRoster', JSON.stringify({ cachedAt: new Date().toISOString(), assignments: pwaRoster ?? [] })); setPwaNote(lang === 'ar' ? 'تم حفظ الجدول دون اتصال.' : 'Roster saved for offline viewing.'); } catch { setPwaNote(''); } }} disabled={!pwaRoster}>{lang === 'ar' ? 'حفظ الجدول دون اتصال' : 'Save roster offline'}</button>
+        {pwaNote && <p>{pwaNote}</p>}
+        {pwaRoster && <ul>{pwaRoster.map((a, i) => <li key={i}>{a.date} — {a.shiftTemplateId ?? '—'} {a.onLeave ? `(${lang === 'ar' ? 'إجازة' : 'on leave'})` : ''}</li>)}</ul>}
+        <p>{lang === 'ar' ? 'للتثبيت: من متصفح الهاتف اختر «إضافة إلى الشاشة الرئيسية». يعمل عامل الخدمة (service worker) على تخزين واجهة التطبيق والجدول.' : 'To install: from your phone browser choose “Add to Home screen”. The service worker caches the app shell and roster.'}</p>
+      </section>}
 
       {out && <section><h3>API {lang === 'ar' ? 'النتيجة' : 'response'}</h3><pre style={{ background: '#f4f6f3', padding: 12, overflow: 'auto', maxHeight: 400, direction: 'ltr', textAlign: 'left' }}>{out}</pre></section>}
     </div>

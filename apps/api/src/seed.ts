@@ -6,7 +6,7 @@ import { store } from './server.js';
 import { hashPassword } from './auth.js';
 import { clockIn, clockOut, sweepMissedClockOuts } from './attendance.js';
 import { approveLeave } from './leave.js';
-import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS, DEFAULT_PAYROLL_STRUCTURE_SETTINGS, DEFAULT_STATUTORY_SETTINGS, DEFAULT_NOTIFICATIONS_SETTINGS, DEFAULT_INTEGRATIONS_SETTINGS, DEFAULT_AI_AGENTS_SETTINGS } from '@hr-payroll/shared';
+import { DEFAULT_ATTENDANCE_SETTINGS, DEFAULT_SHIFT_SETTINGS, DEFAULT_LEAVE_SETTINGS, DEFAULT_PAYROLL_STRUCTURE_SETTINGS, DEFAULT_STATUTORY_SETTINGS, DEFAULT_NOTIFICATIONS_SETTINGS, DEFAULT_INTEGRATIONS_SETTINGS, DEFAULT_AI_AGENTS_SETTINGS, PLAN_CATALOGUE, ZKTECO_ADDON_PRICE_PIASTERS_PER_MONTH, CONSENT_TEXT_VERSION } from '@hr-payroll/shared';
 import { calculateRun } from './payroll.js';
 import { runBriefing, runScheduleDraft, runAnomalyCheck, answerQa } from './agents.js';
 import { newId } from '@hr-payroll/db';
@@ -172,6 +172,23 @@ export async function seed(): Promise<{ seeded: boolean; tenantId: string }> {
   await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'ما هي ورديتي القادمة؟');
   await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'كم رصيد إجازتي السنوية؟');
   await answerQa(store, tenantId, 'user-emp1', 'emp-demo-1', 'لماذا تم خصم 1100 جنيه من راتبي؟');
+
+  // --- V1 seed: Growth subscription (no ZKTeco add-on — ZKTeco is Pro /
+  // Growth add-on, so the demo tenant is gated until upgraded), plan
+  // catalogue v1, biometric consent for emp-demo-1, one STUBBED ZKTeco
+  // device (Zamalek, LX15) with fixture mappings 101→emp-demo-1,
+  // 102→emp-demo-2, a draft statutory rule v2 (employer NOSI still NULL),
+  // and a superadmin operations record (MFA enabled on the record).
+  store.planCatalogue.push({ id: 'plancat-v1', version: 1, tiers: PLAN_CATALOGUE, zktecoAddonPricePiasters: ZKTECO_ADDON_PRICE_PIASTERS_PER_MONTH, status: 'published', createdByUserId: null, createdAt: new Date().toISOString() });
+  store.subscriptions.push({ id: 'sub-demo', tenantId, plan: 'growth', planVersion: 1, status: 'active', trialEndsAt: null, pricePiastersPerMonth: 99900, addons: [], coupon: null, discountPct: 0, dunningStage: null, createdAt: new Date().toISOString() });
+  store.consents.push({ id: 'consent-demo-1', tenantId, employeeId: 'emp-demo-1', purpose: 'biometric_mobile', consented: true, status: 'active', consentText: 'أوافق كتابياً على استخدام بصمة/وجه هاتفي لتأكيد الحضور (نعم/لا فقط، دون تخزين بصمة مركزياً). I consent in writing to on-device fingerprint/face confirmation for clock-in (yes/no assertion only, no central template storage).', method: 'in_app_signed', version: CONSENT_TEXT_VERSION, consentedAt: '2026-11-08T09:00:00Z', withdrawnAt: null, createdAt: new Date().toISOString() });
+  store.zktecoDevices.push({ id: 'zk-seed-1', tenantId, branchId: 'branch-zamalek', name: 'ZKTeco LX15 — Zamalek entrance', model: 'LX15', serial: 'ZK-DEMO-0001', adapter: 'stub-adms', syncStatus: 'never_synced', lastSyncAt: null, lastError: null, lastClockDriftSeconds: null, createdAt: new Date().toISOString() });
+  store.zktecoMappings.push(
+    { id: 'zkmap-seed-1', tenantId, deviceId: 'zk-seed-1', deviceUserId: '101', employeeId: 'emp-demo-1', createdByUserId: 'user-owner', createdAt: new Date().toISOString() },
+    { id: 'zkmap-seed-2', tenantId, deviceId: 'zk-seed-1', deviceUserId: '102', employeeId: 'emp-demo-2', createdByUserId: 'user-owner', createdAt: new Date().toISOString() },
+  );
+  store.statutoryRules.push({ id: 'statrule-v2-draft', version: 2, values: { nosiEmployeePct: 11, nosiEmployerPct: null, nosiFloorEgp: 2700, nosiCeilingEgp: 16700, minimumWageEgp: 7000 }, effectiveFrom: '2027-01-01', status: 'draft', reviewerSignoffRef: null, releaseNotesAr: 'مسودة — لم تُراجَع بعد', releaseNotesEn: 'Draft — not yet reviewed', stagingResult: null, publishedAt: null, createdByUserId: null, createdAt: new Date().toISOString() });
+  store.superadminUsers.push({ id: 'sa-ops-1', email: 'ops@hr-payroll.example', passwordHash: 'seeded-record-only-no-login', role: 'operations', mfaEnabled: true, createdAt: new Date().toISOString() });
 
   store.seeded = true;
   return { seeded: true, tenantId };

@@ -10,5 +10,5 @@ const app = buildServer({
 
 app.listen({ port, host: '0.0.0.0' }).then(async () => {
   if (store.tenants.size === 0) await seed();
-  console.log(`hr-payroll api listening on :${port} (M4 AI agents v1 — LLM STUBBED)`);
+  console.log(`hr-payroll api listening on :${port} (V1 — ZKTeco STUBBED, biometrics assertion-only, full Superadmin)`);
 });

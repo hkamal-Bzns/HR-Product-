@@ -1,6 +1,7 @@
 // @hr-payroll/shared — pure, dependency-free helpers.
 export * from './payroll.js';
 export * from './agents.js';
+export * from './v1.js';
 // Money is integer piasters everywhere. Phones normalise to +20….
 // No payroll rates are asserted here: the NOSI employer rate is UNRESOLVED
 // (Brief v2 §7/§10) and must stay null until a payroll reviewer confirms it at M0.

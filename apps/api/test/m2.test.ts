@@ -91,6 +91,14 @@ test('M2 offline queue: signed record accepted, duplicate goes to review, never 
 });
 
 test('M2 exceptions: list seeded queue and resolve with a reason + audit', async () => {
+  // Date-proof setup: create a fresh Zamalek off-location exception via QR
+  // clock-in, so the queue count does not depend on the seeded Nov 2026
+  // roster weekday (the seeded 'late' flag only fires on a rostered weekday).
+  const qr = await app.inject({ method: 'GET', url: '/api/attendance/qr-token?branchId=branch-zamalek', headers: H(owner()) });
+  const off = await app.inject({ method: 'POST', url: '/api/attendance/clock-in', headers: H(owner()), payload: { employeeId: 'emp-demo-3', branchId: 'branch-zamalek', token: qr.json().token, lat: 29.99, lng: 31.28 } });
+  assert.equal(off.statusCode, 201);
+  assert.ok(off.json().exceptions.some((e: { kind: string }) => e.kind === 'off_location'));
+  await app.inject({ method: 'POST', url: '/api/attendance/clock-out', headers: H(owner()), payload: { employeeId: 'emp-demo-3' } });
   const list = await app.inject({ method: 'GET', url: '/api/exceptions?status=open', headers: H(mgr()) });
   assert.equal(list.statusCode, 200);
   assert.ok(list.json().exceptions.length >= 3);
