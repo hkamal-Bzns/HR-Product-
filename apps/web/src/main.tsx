@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+const envApiUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim() ?? '';
+const onLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+// Same-origin by default (the API serves this frontend on one deploy). A
+// VITE_API_URL pointing at localhost is only meaningful in local dev —
+// ignore it in production, otherwise the browser would call the visitor's
+// own machine. A real https URL is honoured as an override.
+const API = envApiUrl === '' ? '' : (envApiUrl.includes('localhost') || envApiUrl.includes('127.0.0.1') ? (onLocalhost ? envApiUrl : '') : envApiUrl);
 
 type Page = 'dashboard' | 'attendance' | 'roster' | 'exceptions' | 'leave' | 'payroll' | 'settings' | 'superadmin' | 'agents' | 'devices' | 'consent' | 'pwa';
 

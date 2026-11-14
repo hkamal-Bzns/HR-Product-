@@ -3,6 +3,10 @@
 // No payroll, no clock-in, no WhatsApp, no AI in M1.
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MemoryStore } from '@hr-payroll/db';
 import { normalizePhone, SETTINGS_AREAS, type SettingsArea } from '@hr-payroll/shared';
 import { verifyPassword, verifySession, signSession } from './auth.js';
@@ -13,6 +17,20 @@ import { registerM4 } from './agents.js';
 import { registerV1 } from './v1.js';
 
 export const store = new MemoryStore();
+
+/** Locate the built web frontend (apps/web/dist) from either the TS source
+ *  layout (apps/api/src) or the compiled layout (apps/api/dist/src), or
+ *  from the repo root as the working directory. Returns null when the web
+ *  bundle was not built — the API then runs API-only (e.g. unit tests). */
+export function findWebDist(): string | null {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(process.cwd(), 'apps/web/dist'),
+    path.resolve(here, '../../web/dist'),
+    path.resolve(here, '../../../web/dist'),
+  ];
+  return candidates.find((c) => existsSync(path.join(c, 'index.html'))) ?? null;
+}
 
 export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boolean }): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -141,6 +159,21 @@ export function buildServer(opts: { jwtSecret: string; breakGlassEnabled?: boole
   app.get('/api/phone', async (req) => {
     const q = (req.query as { phone?: string }).phone ?? '';
     try { return { input: q, normalised: normalizePhone(q) }; } catch (e) { return { error: (e as Error).message }; }
+  });
+
+  // Serve the built web frontend from the same origin, so one deploy covers
+  // API + dashboard. Skipped silently when the web bundle was not built.
+  // API routes always win: the static plugin only serves files that exist;
+  // anything else falls through to the not-found handler below, which keeps
+  // JSON 404s for /api + /health and serves index.html for app paths.
+  const webDist = findWebDist();
+  if (webDist) {
+    void app.register(fastifyStatic, { root: webDist, prefix: '/', wildcard: false, index: ['index.html'] });
+  }
+  app.setNotFoundHandler((req, reply) => {
+    const url = req.raw.url ?? '';
+    if (url.startsWith('/api') || url === '/health' || !webDist) return reply.code(404).send({ error: 'not found' });
+    return reply.sendFile('index.html');
   });
 
   return app;
